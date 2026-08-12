@@ -68,7 +68,16 @@ hard-won details.
 - **`comparisons:` in a running-ng config is `label`/`a`/`b` (+ `mode`), NOT the
   contract's `kind`/`over`/`baseline`/`variants`.** `contract/native.py::
   _map_comparisons` translates a/b → contract comparisons on emission. Emitting
-  the contract shape produces a config `validate()` rejects.
+  the contract shape produces a config `validate()` rejects. Do not "standardise"
+  this: comparisons are visualization metadata only (what *varies* is declared by
+  `config_sweep:`), the a/b → contract translation is already lossless, and the
+  dashboard consumes only `inter`, treating a missing `kind` as inter. See the
+  design doc, "Decided: do NOT standardise the input comparison grammar".
+- **`a` is the BASELINE — the merge base, not the PR head.** `b` is
+  `[PR head, …extras]`. `bench.js::sweepDeltaRows` reports "the % change of the
+  variant relative to the baseline. Negative = variant is better (green)", so
+  swapping the sides inverts every delta and makes green mean regression. In this
+  repo that is carried by `Variant.role`: the `Baseline` variant becomes `a:`.
 - **`validate()` requires every runtime in `configs:` to be referenced by a
   comparison and vice versa.** So a single-runtime run must emit **no**
   `comparisons:` block at all — not a self-comparison.

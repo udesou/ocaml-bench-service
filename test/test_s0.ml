@@ -339,6 +339,34 @@ let test_modifier_chain () =
     check_true ~name:"lavyek chain is explained in a warning"
       (List.exists (contains ~needle:"macro-lavyek-monorepo") spec.warnings)
 
+(* `a:` is the baseline, and the baseline must be the merge base: the dashboard
+   reports the variant's change *relative to* it, so swapping the sides inverts
+   the sign of every delta and makes an improvement look like a regression. *)
+let test_baseline_direction () =
+  (match gen "/bench" with
+  | Error e -> fail "baseline direction: %s" e
+  | Ok spec ->
+    check_contains ~name:"merge base is a:" ~needle:"    a: ocaml-base-5.5.0"
+      spec.config_yaml;
+    check_contains ~name:"PR head is b:"
+      ~needle:"    b: [ocaml-pr-1234-c0f8c8c]" spec.config_yaml);
+  (* Moving the Baseline role must move which side is `a:`. *)
+  match
+    gen
+      ~variants:
+        [
+          { base_v with role = Variant.Candidate };
+          { head_v with role = Variant.Baseline };
+        ]
+      "/bench"
+  with
+  | Error e -> fail "baseline direction (swapped): %s" e
+  | Ok spec ->
+    check_contains ~name:"role swap moves a:"
+      ~needle:"    a: ocaml-pr-1234-c0f8c8c" spec.config_yaml;
+    check_contains ~name:"role swap moves b:" ~needle:"    b: [ocaml-base-5.5.0]"
+      spec.config_yaml
+
 let test_single_runtime () =
   match gen ~variants:[ head_v ] "/bench" with
   | Error e -> fail "single runtime: %s" e
@@ -478,6 +506,7 @@ let () =
   test_golden ();
   test_shape_rules ();
   test_modifier_chain ();
+  test_baseline_direction ();
   test_canonical_dimension_spelling ();
   test_single_runtime ();
   test_gen_rejects ();
