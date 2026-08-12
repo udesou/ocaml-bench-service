@@ -1,0 +1,5 @@
+(test
+ (name test_s0)
+ (libraries bench_service yojson)
+ (deps
+  (glob_files fixtures/*)))

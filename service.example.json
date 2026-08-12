@@ -1,0 +1,44 @@
+{
+  "_comment": [
+    "Service configuration. Copy to service.json and edit; service.json is",
+    "gitignored so a real allowlist and a real bot account never land in git.",
+    "",
+    "bot.account   the GitHub account the bot posts as. Swappable: nothing in",
+    "              the code names it. Start with a throwaway account, move to a",
+    "              real one by editing this file.",
+    "bot.token_env the environment variable holding its token. The token itself",
+    "              is never in this file, and never on a bench machine.",
+    "allowlist     who may trigger a run. A run costs ~1h of exclusive machine",
+    "              time and executes PR compiler code, so this is a privilege.",
+    "              Extend it by editing this file -- no deploy needed.",
+    "allow_associations  escape hatch, e.g. [\"OWNER\"]. Empty by default:",
+    "              explicit logins beat inferred permissions.",
+    "machines      the slot registry. One entry = one concurrent run, because",
+    "              the opam root lock is what serialises runs."
+  ],
+
+  "bot": {
+    "account": "ocaml-bench-bot",
+    "token_env": "BENCH_BOT_TOKEN"
+  },
+
+  "results_repo": "udesou/ocaml-bench-results",
+
+  "allowlist": ["udesou"],
+  "allow_associations": [],
+
+  "cap_seconds": 7200,
+  "cell_seconds": 30,
+
+  "machines": [
+    {
+      "name": "monolith",
+      "default": true,
+      "ssh": "localhost",
+      "opamroot": null,
+      "macro_bench_dir": "/home/udesou/macro-benches",
+      "log_dir": "/home/udesou/bench-runs",
+      "dedicated": false
+    }
+  ]
+}

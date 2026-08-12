@@ -1,0 +1,25 @@
+These fixtures are snapshots. Refresh them with `make fixtures`.
+
+  facts_macro_base.json  scripts/rng_helper.py facts, run over
+                         src/running/config/base/ocaml/macro_base.yml as of
+                         running-ng origin/adding-ocaml-support @ fb9751c
+                         ("macro: per-benchmark/per-suite ocamlrunparam" #15)
+                         Captured 2026-08-12.
+
+  vocab.json             ~/ocaml-bench-dashboard/schema/json/vocab.json
+                         (generated from lib/schema/registry.ml)
+
+Taken from a pinned REF, never the working copy: running-ng carries a dozen
+feature branches, and a fixture captured from whichever one is checked out
+silently changes what the tests mean. A checkout predating the input-size
+ladder, for instance, has no `small_run` tag at all.
+
+Why snapshots: the table tests must fail for one reason only -- a change in the
+generator. Reading a live config would make them fail whenever someone edits a
+tag or adds a benchmark, and a red test that is somebody else's edit is a test
+people learn to ignore.
+
+The live files are still covered: `make live` runs the same generation against
+origin/adding-ocaml-support and pushes each config through running-ng's real
+validate(). If that fails while `make test` passes, the base config moved and
+these fixtures need refreshing.

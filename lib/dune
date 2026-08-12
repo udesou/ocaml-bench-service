@@ -1,0 +1,3 @@
+(library
+ (name bench_service)
+ (libraries yojson unix))

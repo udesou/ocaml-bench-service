@@ -1,0 +1,7 @@
+_build/
+*.install
+/out/
+/_opam/
+# The live registry: real allowlist, real bot account, real paths.
+/service.json
+_fixture_base.yml

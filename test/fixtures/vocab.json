@@ -1,0 +1,64 @@
+{
+  "schema_version": "1.0",
+  "config_id": {
+    "algorithm": "md5",
+    "prefix": "cfg_",
+    "field_separator": "\u001f",
+    "list_separator": ",",
+    "fields": [ "kind", "version", "commit", "options", "dimensions" ],
+    "recipe": "canonical = kind FS version FS (commit|\"\") FS join(sorted(options),LS) FS join(sorted(\"k=v\" for dims),LS); id = prefix + md5_hex(canonical). FS=field_separator, LS=list_separator. Dimension values: int/bool/string stringified plainly, floats via %g."
+  },
+  "metric_catalog": {
+    "wall_time": { "unit": "s", "layer": 1, "source": "olly" },
+    "cpu_time": { "unit": "s", "layer": 1, "source": "olly" },
+    "max_rss": { "unit": "KiB", "layer": 1, "source": "olly" },
+    "mean_latency": { "unit": "ms", "layer": 1, "source": "olly" },
+    "gc_overhead": { "unit": "pct", "layer": 2, "source": "olly" },
+    "gc_time": { "unit": "s", "layer": 2, "source": "olly" },
+    "minor_collections": { "unit": "count", "layer": 2, "source": "olly" },
+    "major_collections": { "unit": "count", "layer": 2, "source": "olly" },
+    "promoted_pct": { "unit": "pct", "layer": 2, "source": "olly" },
+    "minor_words": { "unit": "words", "layer": 2, "source": "olly" },
+    "major_words": { "unit": "words", "layer": 2, "source": "olly" },
+    "instructions": { "unit": "count", "layer": 3, "source": "perf" },
+    "cycles": { "unit": "count", "layer": 3, "source": "perf" },
+    "page_faults": { "unit": "count", "layer": 3, "source": "perf" },
+    "task_clock": { "unit": "ns", "layer": 3, "source": "perf" }
+  },
+  "olly_field_map": {
+    "wall_time": "wall_time",
+    "cpu_time": "cpu_time",
+    "gc_time": "gc_time",
+    "gc_overhead": "gc_overhead",
+    "max_rss_kb": "max_rss",
+    "mean_latency": "mean_latency",
+    "allocations.promoted_pct": "promoted_pct",
+    "allocations.minor_heap": "minor_words",
+    "allocations.major_heap": "major_words",
+    "collections.minor": "minor_collections",
+    "collections.major": "major_collections"
+  },
+  "perf_event_map": {
+    "instructions": "instructions",
+    "cycles": "cycles",
+    "page-faults": "page_faults",
+    "task-clock": "task_clock"
+  },
+  "dimension_of_modifier": {
+    "s": { "dimension": "minor_heap", "unit": "words" },
+    "o": { "dimension": "space_overhead", "unit": "pct" },
+    "M": { "dimension": "custom_major_ratio", "unit": "pct" },
+    "m": { "dimension": "custom_minor_ratio", "unit": "pct" },
+    "re": { "dimension": "runtime_events_ring_log2", "unit": "log2_words" },
+    "md": { "dimension": "max_domains", "unit": "count" },
+    "re_par": {
+      "dimension": "runtime_events_ring_log2",
+      "unit": "log2_words"
+    },
+    "md_par": { "dimension": "max_domains", "unit": "count" },
+    "plan": { "dimension": "gc_plan", "unit": "name" },
+    "threads": { "dimension": "gc_threads", "unit": "count" }
+  },
+  "olly_output_version_supported": [ 1, 2 ],
+  "tool_supported_versions": { "olly": [ "0.5" ], "perf": [ "6" ] }
+}
