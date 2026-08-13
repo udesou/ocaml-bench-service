@@ -25,9 +25,9 @@ type t = {
 
 let default_cell_seconds = 30.0
 
-(* 2 h, per the design doc.  Compiler builds are excluded: they are cached and
-   highly variable, so they are reported separately rather than folded into a
-   number the user is asked to reason about. *)
+(* Compiler builds are excluded from the estimate: they are cached and highly
+   variable, so they are reported separately rather than folded into a number the
+   user is asked to reason about. *)
 let default_cap_seconds = 2.0 *. 60.0 *. 60.0
 
 let estimate ?(cell_seconds = default_cell_seconds) ~programs ~configs

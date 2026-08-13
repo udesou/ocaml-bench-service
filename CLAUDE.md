@@ -1,9 +1,9 @@
 # CLAUDE.md — working notes for agents & contributors on `ocaml-bench-service`
 
 Auto-loaded context for Claude Code (and orientation for humans). `README.md` is
-the human-facing overview. The authoritative design is
-`~/benchmarking-service-design.md`; this file holds the internals and the
-hard-won details.
+the human-facing overview; this file holds the internals and the hard-won
+details. Everything needed to work on this repo is in the repo — no external
+document is required reading.
 
 ## What this is
 
@@ -11,10 +11,12 @@ hard-won details.
   `/bench` PR comment becomes a validated running-ng run, whose contract
   artifacts become a report and a dashboard page.
 - Sibling repos own everything else and are treated as fixed contracts:
-  `~/running-ng` (runner), `~/macro-benches` (suites),
-  `~/ocaml-bench-dashboard` (data contract + ingestor + dashboard).
-- **Stage S0 only** so far: `bench-gen`, the comment → run-spec generator.
-  Nothing schedules, ssh's, or measures yet.
+  **running-ng** (runner), **macro-benches** (suites), **ocaml-bench-dashboard**
+  (data contract + ingestor + dashboard). Paths to their checkouts are
+  configuration (`RUNNING_NG_REPO`, `VOCAB`, the machine registry), never
+  assumptions.
+- **Request generation only** so far: `bench-gen`, comment → run spec. Nothing
+  schedules, ssh's, or measures yet. `README.md` has the roadmap.
 
 ## Hard rules (do not violate)
 
@@ -33,8 +35,9 @@ hard-won details.
   running-ng, where switches *are* the compiler cache.
 - **`service.json` is gitignored** and stays that way: it carries the real
   allowlist and bot account.
-- Keep `README.md`, this file, and `~/benchmarking-service-design.md` consistent
-  with every change.
+- Keep `README.md`, this file, and `docs/RUNSPEC.md` consistent with every
+  change. Each pushed increment must stand on its own: no pointing at documents
+  that live outside the repository.
 
 ## Where things live
 
@@ -57,9 +60,9 @@ hard-won details.
 - `lib/service_config.ml` / `lib/authz.ml` — bot identity, allowlist, machine
   registry.
 - `lib/help.ml` — `/bench help`, generated from facts + vocab.
-- `lib/runspec.ml` — the S0 → S1 interface, specified in `docs/RUNSPEC.md`.
-  **Change both together.** Self-contained (config inline, not by path), pins
-  running-ng *and* macro-benches by ref, and carries no credentials.
+- `lib/runspec.ml` — the generator → runner interface, specified in
+  `docs/RUNSPEC.md`. **Change both together.** Self-contained (config inline, not
+  by path), pins running-ng *and* macro-benches by ref, carries no credentials.
 - `lib/bridge.ml` — the only caller of python.
 - `scripts/rng_helper.py` — `facts` | `validate` | `tagfilter`.
 - `test/` — table tests against `test/fixtures/` snapshots.
@@ -74,8 +77,11 @@ hard-won details.
   the contract shape produces a config `validate()` rejects. Do not "standardise"
   this: comparisons are visualization metadata only (what *varies* is declared by
   `config_sweep:`), the a/b → contract translation is already lossless, and the
-  dashboard consumes only `inter`, treating a missing `kind` as inter. See the
-  design doc, "Decided: do NOT standardise the input comparison grammar".
+  dashboard consumes only `inter`, treating a missing `kind` as inter — it
+  derives curves and heatmaps from which dimensions actually vary, and
+  synthesises `inter` comparisons itself, so `intra`/`both` are unused rather
+  than half-built. This was investigated and closed; do not reopen it without
+  new evidence from the dashboard side.
 - **`a` is the BASELINE — the merge base, not the PR head.** `b` is
   `[PR head, …extras]`. `bench.js::sweepDeltaRows` reports "the % change of the
   variant relative to the baseline. Negative = variant is better (green)", so
@@ -141,8 +147,8 @@ hard-won details.
 
 ## Per-session workflow
 
-1. Read `~/benchmarking-service-design.md`, then `README.md`, then this file.
+1. Read `README.md`, then this file, then `docs/RUNSPEC.md`.
 2. `make switch` once, then `make build test`.
 3. `make live` before trusting anything against the real configs (it reads
-   `origin/adding-ocaml-support`; `git -C ~/running-ng fetch origin` first).
+   `origin/adding-ocaml-support` from the running-ng checkout; fetch first).
 4. Commit only when asked. No `Co-Authored-By: Claude`.

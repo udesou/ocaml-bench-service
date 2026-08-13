@@ -8,9 +8,10 @@
      variable so rotating it never touches a source file.
    * The **allowlist** must be extendable without a deploy: a maintainer edits
      this file and the next request sees it.
-   * The **machine registry** is how machines are added and removed.  A slot is
-     (host, OPAMROOT, benches dir) -- see the design doc, section 8 -- because
-     the opam root lock is what serialises runs. *)
+   * The **machine registry** is how machines are added and removed.  An entry is
+     really a *slot*: (host, OPAMROOT, benches dir).  One slot means one
+     concurrent run, because running-ng locks the opam root -- which is also the
+     property that keeps two measurements from overlapping on one machine. *)
 
 type bot = { account : string; token_env : string }
 

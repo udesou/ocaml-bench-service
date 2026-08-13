@@ -1,4 +1,4 @@
-(* bench-gen -- the S0 command line.
+(* bench-gen -- the request-generation command line.
 
      parse   a /bench comment                    -> JSON (no side effects)
      spec    a /bench comment + pinned variants  -> run spec (+ optional --check)
@@ -342,8 +342,8 @@ let cmd_spec o =
       | Ok spec ->
         Util.write_file config_path spec.config_yaml;
         (* The run spec is always written, whatever --format prints: it is the
-           artifact S1 consumes and the provenance record archived beside the
-           results.  See docs/RUNSPEC.md. *)
+           artifact the runner consumes and the provenance record archived
+           beside the results.  See docs/RUNSPEC.md. *)
         let sources =
           [
             Runspec.source ~name:"running-ng" ~dir:o.running_ng_dir

@@ -1,4 +1,4 @@
-(* S0 acceptance tests.
+(* Acceptance tests for request generation.
 
    Three groups:
 

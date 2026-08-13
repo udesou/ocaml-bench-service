@@ -4,9 +4,9 @@ The normative description of what the server hands to a bench machine for one
 benchmark run. `lib/runspec.ml` is the implementation; this file is the spec.
 Change both together.
 
-A run spec is a single JSON object. It is produced by the request server (stage
-S0, `bench-gen spec --format json`), consumed by the runner (stage S1), and
-archived beside the results as the run's provenance record.
+A run spec is a single JSON object. It is produced by the request server
+(`bench-gen spec`), consumed by the runner that executes it on a bench machine,
+and archived beside the results as the run's provenance record.
 
 ```sh
 bench-gen spec --comment "/bench tag=small" \
@@ -18,11 +18,11 @@ bench-gen spec --comment "/bench tag=small" \
 
 ## Why it exists at all
 
-Before this, S0 produced a YAML file and printed shell `export` lines. That is
-enough for a human reading a terminal and useless as an interface: it is not
-machine-readable, it cannot be archived or replayed, and it omitted three things
-the machine actually needs — which commits of running-ng and macro-benches to
-use, what command to run, and when to give up.
+Before this, the generator produced a YAML file and printed shell `export` lines.
+That is enough for a human reading a terminal and useless as an interface: it is
+not machine-readable, it cannot be archived or replayed, and it omitted three
+things the machine actually needs — which commits of running-ng and macro-benches
+to use, what command to run, and when to give up.
 
 ## Design rules
 
@@ -132,7 +132,8 @@ cleanup. (The opam flock is safe either way — the kernel drops it on exit.)
 it (running-ng names it `<host>-<timestamp>`, so the server cannot predict it).
 `fetch` are the globs to bring back — contract artifacts, logs, the per-tool
 sidecars, and the merged `runbms.yml`. `exclude` keeps raw memtrace traces on the
-machine: they are large and the results repo is not an artifact store.
+machine: they are large, and the results repo holds the small canonical
+artifacts rather than bulk data.
 
 Artifacts must be fetched **even when the run fails**. A run that dies at 45
 minutes still has usable data: the contract degrades gracefully and a comparison

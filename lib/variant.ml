@@ -18,9 +18,13 @@ let sha_short sha =
 (* The runtime name is the compiler cache key: running-ng provisions the switch
    `running-ng-<runtime name>` and treats it as the cache.  Encoding the sha
    here is what makes a second request against the same commit reuse the switch
-   instead of rebuilding for 10-20 minutes.  (Sufficient reuse also needs the
-   provenance check in the design doc section 7 -- the sha alone does not
-   capture configure_args or the dune pin.) *)
+   instead of rebuilding for 10-20 minutes.
+
+   The sha alone is NOT sufficient to justify reuse: nothing in a switch records
+   what built it, so the same commit under different configure_args, a different
+   pinned dune, or a shifted opam repo gives a differently-built compiler under
+   the same name.  The runner records that provenance separately and reuses only
+   on an exact match. *)
 let runtime_name t =
   let label = Util.sanitize t.label in
   match t.spec with

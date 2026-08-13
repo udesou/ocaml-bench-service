@@ -1,8 +1,9 @@
 (* The run spec: the complete, serialised description of one benchmark run.
 
-   This is the S0 -> S1 interface.  The server produces it; the runner consumes
-   it; a copy is archived next to the results as the request's provenance record.
-   docs/RUNSPEC.md is the normative description -- keep the two in step.
+   The interface between request generation and the runner.  The server produces
+   it; the runner consumes it; a copy is archived next to the results as the
+   request's provenance record.  docs/RUNSPEC.md is the normative description --
+   keep the two in step.
 
    Three properties are deliberate:
 
@@ -10,8 +11,8 @@
      spec can be archived, replayed, or diffed on its own, and the runner does
      not need a shared filesystem with the server.
    * **Explicit about sources.** running-ng and macro-benches are pinned by ref,
-     and the runner records the commit it actually checked out. The design doc
-     requires the macro-benches commit in the run's identity: a change to
+     and the runner records the commit it actually checked out. The
+     macro-benches commit has to be part of the run's identity: a change to
      benchmark source does NOT invalidate a cached binary (binaries are keyed
      `<benchmark>-<runtime>`, and the runtime name encodes only the compiler
      sha), so without this a run silently measures old benchmark code against a
@@ -157,7 +158,7 @@ let to_json ~(ctx : Gen.context) ~(request : Request.t) ~(spec : Gen.t)
                      "runbms_args.yml";
                    ]) );
             (* Raw traces stay on the machine: they are large, and the results
-               repo is not an artifact store (design doc section 10). *)
+               repo holds the small canonical artifacts, not bulk data. *)
             ("exclude", `List (List.map str [ "memtrace_*.trace" ]));
           ] );
       ( "limits",

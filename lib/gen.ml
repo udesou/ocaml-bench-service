@@ -8,7 +8,8 @@
    bridge, and writing files are the caller's job -- which is what lets the
    generator be table-tested without python, a network, or a machine.
 
-   Shape rules that are not obvious and are load-bearing (design doc, 5 and 6):
+   Shape rules that are not obvious and are load-bearing.  Each of these fails
+   SILENTLY if got wrong, which is why they are encoded here and tested:
 
    * The config `includes:` macro_base.yml and declares only runtimes, configs,
      modifiers, config_sweep, comparisons, overrides.  "Config layering is law."
@@ -408,7 +409,7 @@ let generate ~ctx ~(request : Request.t) ~(facts : Facts.t) ~sweepable ~variants
       ("LOG_DIR", ctx.log_dir);
       (* Reuse is the service's policy: the switch is the compiler cache and a
          rebuild costs 10-20 min per runtime.  Correctness comes from the
-         provenance check (design doc, section 7), not from rebuilding. *)
+         runner's switch-provenance check, not from rebuilding blindly. *)
       ("RUNNING_REUSE_SWITCHES", "1");
       ("RUNNING_TAG", tag);
     ]
