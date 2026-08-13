@@ -37,6 +37,16 @@ let check_eq ~name ~expected ~actual =
 
 let check_true ~name cond = incr checks; if not cond then fail "%s" name
 
+(* JSON accessors return options, so compare them without losing which side was
+   absent -- "expected Some x, got None" is the failure that actually happens. *)
+let show_opt = function None -> "<absent>" | Some s -> s
+
+let check_eq_opt ~name ~expected ~actual =
+  incr checks;
+  if expected <> actual then
+    fail "%s\n      expected: %S\n      actual:   %S" name (show_opt expected)
+      (show_opt actual)
+
 let contains ~needle haystack =
   let nl = String.length needle and hl = String.length haystack in
   let rec go i = i + nl <= hl && (String.sub haystack i nl = needle || go (i + 1)) in
@@ -488,6 +498,93 @@ let test_authz () =
     | Error e -> contains ~needle:"Registered machines: monolith" e
     | Ok _ -> false)
 
+(* --- 4. the run spec (docs/RUNSPEC.md) ----------------------------------- *)
+
+let member k = function
+  | `Assoc kvs -> ( match List.assoc_opt k kvs with Some v -> v | None -> `Null)
+  | _ -> `Null
+
+let jstr j = match j with `String x -> Some x | _ -> None
+let jint j = match j with `Int i -> Some i | _ -> None
+
+let test_runspec () =
+  match gen "/bench tag=small iterations=1" with
+  | Error e -> fail "runspec: generation failed: %s" e
+  | Ok spec ->
+    let sources =
+      [
+        Runspec.source ~name:"running-ng" ~dir:"/rng"
+          ~git_ref:"origin/adding-ocaml-support" ();
+        Runspec.source ~name:"macro-benches" ~dir:"/mb" ~git_ref:"origin/master"
+          ();
+      ]
+    in
+    let request =
+      match Request.parse "/bench tag=small iterations=1" with
+      | Ok r -> r
+      | Error e -> failwith e
+    in
+    let j =
+      Runspec.to_json ~ctx:(ctx ()) ~request ~spec
+        ~variants:[ base_v; head_v ] ~sources ~ssh:"bench1.example"
+        ~slot:"monolith:default-opamroot"
+    in
+    check_eq_opt ~name:"runspec is versioned" ~expected:(Some "1")
+      ~actual:(jstr (member "runspec_version" j));
+    (* Self-contained: the config travels inline, so a spec can be archived,
+       replayed or diffed without a shared filesystem. *)
+    let cfg = member "config" j in
+    check_eq_opt ~name:"config travels inline" ~expected:(Some spec.config_yaml)
+      ~actual:(jstr (member "contents" cfg));
+    check_eq_opt ~name:"config md5 matches its contents"
+      ~expected:(Some (Digest.to_hex (Digest.string spec.config_yaml)))
+      ~actual:(jstr (member "md5" cfg));
+    (* RUNNING_TAG is why a run spec cannot be just a YAML file. *)
+    check_eq_opt ~name:"env carries RUNNING_TAG" ~expected:(Some "small_run")
+      ~actual:(jstr (member "RUNNING_TAG" (member "env" j)));
+    check_eq_opt ~name:"env carries switch reuse" ~expected:(Some "1")
+      ~actual:(jstr (member "RUNNING_REUSE_SWITCHES" (member "env" j)));
+    (* Both repos pinned by ref, commit left for the runner to fill in -- the
+       macro-benches commit is part of run identity because a benchmark-source
+       change does not invalidate a cached binary. *)
+    (match member "sources" j with
+    | `List [ a; b ] ->
+      check_eq_opt ~name:"first source is running-ng (also the cwd)"
+        ~expected:(Some "running-ng") ~actual:(jstr (member "name" a));
+      check_eq_opt ~name:"macro-benches is pinned too"
+        ~expected:(Some "macro-benches") ~actual:(jstr (member "name" b));
+      check_true ~name:"commits are the runner's to fill in"
+        (member "commit" a = `Null && member "commit" b = `Null);
+      check_eq_opt ~name:"cwd is the running-ng checkout" ~expected:(Some "/rng")
+        ~actual:(jstr (member "cwd" (member "command" j)))
+    | _ -> fail "runspec: expected exactly two sources");
+    (* Exactly one baseline: it is the merge base, and every delta is relative
+       to it. *)
+    (match member "runtimes" j with
+    | `List rts ->
+      let baselines =
+        List.filter (fun r -> jstr (member "role" r) = Some "baseline") rts
+      in
+      check_true ~name:"exactly one baseline runtime"
+        (List.length baselines = 1);
+      check_eq_opt ~name:"the baseline is the merge base"
+        ~expected:(Some "ocaml-base-5.5.0")
+        ~actual:(jstr (member "name" (List.hd baselines)))
+    | _ -> fail "runspec: runtimes is not a list");
+    (* The timeout must exceed the estimate and respect the cold-build floor,
+       or a slot gets freed while the run was still fine. *)
+    let limits = member "limits" j in
+    let est = Option.value (jint (member "estimated_seconds" limits)) ~default:0
+    and tmo = Option.value (jint (member "timeout_seconds" limits)) ~default:0 in
+    check_true ~name:"timeout exceeds the estimate" (tmo > est);
+    check_true ~name:"timeout respects the 90m cold-build floor"
+      (tmo >= 90 * 60);
+    (* Nothing resembling a credential may reach the bench machine. *)
+    let dumped = Yojson.Safe.to_string j in
+    check_true ~name:"no token field anywhere in the spec"
+      (not (contains ~needle:"token" dumped)
+      && not (contains ~needle:"results_repo" dumped))
+
 let test_help () =
   let h =
     Help.render ~facts ~sweepable ~machines:[ "monolith" ] ~cap_seconds:7200.
@@ -512,6 +609,7 @@ let () =
   test_gen_rejects ();
   test_variant_naming ();
   test_cost ();
+  test_runspec ();
   test_authz ();
   test_help ();
   ok "done";

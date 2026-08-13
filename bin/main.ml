@@ -41,6 +41,10 @@ type opts = {
   variants : Variant.t list;
   baseline : string option;
   check : bool;
+  format : string;
+  running_ng_dir : string;
+  running_ng_ref : string;
+  macro_benches_ref : string;
 }
 
 let default_opts () =
@@ -66,6 +70,12 @@ let default_opts () =
     variants = [];
     baseline = None;
     check = false;
+    format = "text";
+    running_ng_dir = Filename.concat home "running-ng";
+    (* Pinned refs, not "whatever is checked out": that working copy moves
+       between feature branches, and the run must say which code it ran. *)
+    running_ng_ref = "origin/adding-ocaml-support";
+    macro_benches_ref = "origin/master";
   }
 
 let die fmt = Printf.ksprintf (fun s -> prerr_endline s; exit 2) fmt
@@ -85,10 +95,14 @@ let usage () =
 Variants are `version:<label>:<v>` or `commit:<label>:<sha>`; the first is the
 baseline unless --baseline names another label.
 
-Options: --base-config --vocab --running-ng-src --helper --service-config
-         --macro-bench-dir --log-dir --machine --request-id --opamroot
-         --pr-url --requested-by --login --association --cell-seconds
-         --cap-seconds --out --check
+`spec` always writes <request_id>.yml and <request_id>.runspec.json into --out;
+--format json prints the run spec instead of the config. See docs/RUNSPEC.md.
+
+Options: --base-config --vocab --running-ng-src --running-ng-dir --running-ng-ref
+         --macro-benches-ref --helper --service-config --macro-bench-dir
+         --log-dir --machine --request-id --opamroot --pr-url --requested-by
+         --login --association --cell-seconds --cap-seconds --out --format
+         --check
 |};
   exit 0
 
@@ -128,6 +142,10 @@ let parse_args argv =
             match Variant.of_cli_string v with
             | Error e -> die "%s" e
             | Ok var -> { !o with variants = !o.variants @ [ var ] })
+      | "--format" -> set (fun v -> { !o with format = v })
+      | "--running-ng-dir" -> set (fun v -> { !o with running_ng_dir = v })
+      | "--running-ng-ref" -> set (fun v -> { !o with running_ng_ref = v })
+      | "--macro-benches-ref" -> set (fun v -> { !o with macro_benches_ref = v })
       | "--check" -> o := { !o with check = true }; go rest
       | "-h" | "--help" -> usage ()
       | other -> die "unknown flag %s (try --help)" other)
@@ -174,25 +192,42 @@ let load_sweepable o =
 
 (* Machine, dirs and budgets come from the service config when there is one, and
    from flags otherwise, so the CLI stays usable before a config exists. *)
+type placement = {
+  p_machine : string;
+  p_ssh : string;
+  p_macro_bench_dir : string;
+  p_log_dir : string;
+  p_opamroot : string option;
+  p_cap : float;
+  p_cell : float;
+}
+
 let resolve_placement o svc =
   match svc with
   | None ->
-    ( Option.value o.machine ~default:"local",
-      o.macro_bench_dir,
-      o.log_dir,
-      o.opamroot,
-      Option.value o.cap_seconds ~default:Cost.default_cap_seconds,
-      Option.value o.cell_seconds ~default:Cost.default_cell_seconds )
+    {
+      p_machine = Option.value o.machine ~default:"local";
+      p_ssh = "localhost";
+      p_macro_bench_dir = o.macro_bench_dir;
+      p_log_dir = o.log_dir;
+      p_opamroot = o.opamroot;
+      p_cap = Option.value o.cap_seconds ~default:Cost.default_cap_seconds;
+      p_cell = Option.value o.cell_seconds ~default:Cost.default_cell_seconds;
+    }
   | Some (c : Service_config.t) -> (
     match Service_config.resolve_machine c o.machine with
     | Error e -> print_endline e; exit 1
     | Ok m ->
-      ( m.name,
-        m.macro_bench_dir,
-        m.log_dir,
-        (match o.opamroot with Some r -> Some r | None -> m.opamroot),
-        Option.value o.cap_seconds ~default:c.cap_seconds,
-        Option.value o.cell_seconds ~default:c.cell_seconds ))
+      {
+        p_machine = m.name;
+        p_ssh = m.ssh;
+        p_macro_bench_dir = m.macro_bench_dir;
+        p_log_dir = m.log_dir;
+        p_opamroot =
+          (match o.opamroot with Some r -> Some r | None -> m.opamroot);
+        p_cap = Option.value o.cap_seconds ~default:c.cap_seconds;
+        p_cell = Option.value o.cell_seconds ~default:c.cell_seconds;
+      })
 
 let cmd_parse o =
   match Request.parse o.comment with
@@ -212,9 +247,10 @@ let cmd_help o =
         | Some m -> m.name
         | None -> "none") )
   in
-  let _, _, _, _, cap_seconds, _ = resolve_placement o svc in
+  let pl = resolve_placement o svc in
   print_string
-    (Help.render ~facts ~sweepable ~machines ~cap_seconds ~default_machine)
+    (Help.render ~facts ~sweepable ~machines ~cap_seconds:pl.p_cap
+       ~default_machine)
 
 let cmd_authz o =
   match load_service o with
@@ -260,9 +296,7 @@ let cmd_spec o =
         | Some _ as m -> { o with machine = m }
         | None -> o
       in
-      let machine, macro_bench_dir, log_dir, opamroot, cap_seconds, cell_seconds =
-        resolve_placement o svc
-      in
+      let pl = resolve_placement o svc in
       let facts = load_facts o in
       let sweepable = load_sweepable o in
       let tag = Request.resolved_tag request in
@@ -291,30 +325,60 @@ let cmd_spec o =
           Gen.request_id = o.request_id;
           base_include = o.base_config;
           config_path;
-          macro_bench_dir;
-          log_dir;
-          opamroot;
-          machine;
-          requested_by = (match o.requested_by with Some u -> Some u | None -> o.login);
+          macro_bench_dir = pl.p_macro_bench_dir;
+          log_dir = pl.p_log_dir;
+          opamroot = pl.p_opamroot;
+          machine = pl.p_machine;
+          requested_by =
+            (match o.requested_by with Some u -> Some u | None -> o.login);
           pr_url = o.pr_url;
           program_count;
-          cell_seconds;
-          cap_seconds;
+          cell_seconds = pl.p_cell;
+          cap_seconds = pl.p_cap;
         }
       in
       match Gen.generate ~ctx ~request ~facts ~sweepable ~variants:o.variants with
       | Error e -> print_endline e; exit 1
       | Ok spec ->
         Util.write_file config_path spec.config_yaml;
-        print_string spec.config_yaml;
-        print_newline ();
-        print_endline "# --- environment ---";
-        List.iter
-          (fun (k, v) -> Printf.printf "export %s=%s\n" k (Filename.quote v))
-          spec.env;
-        Printf.printf "\n# estimate: %s\n" (Cost.explain spec.cost);
-        Printf.printf "# config written to: %s\n" config_path;
-        List.iter (fun w -> Printf.printf "# warning: %s\n" w) spec.warnings;
+        (* The run spec is always written, whatever --format prints: it is the
+           artifact S1 consumes and the provenance record archived beside the
+           results.  See docs/RUNSPEC.md. *)
+        let sources =
+          [
+            Runspec.source ~name:"running-ng" ~dir:o.running_ng_dir
+              ~git_ref:o.running_ng_ref ();
+            Runspec.source ~name:"macro-benches" ~dir:pl.p_macro_bench_dir
+              ~git_ref:o.macro_benches_ref ();
+          ]
+        in
+        let slot =
+          Printf.sprintf "%s:%s" pl.p_machine
+            (Option.value pl.p_opamroot ~default:"default-opamroot")
+        in
+        let runspec_path =
+          Filename.concat out_dir (o.request_id ^ ".runspec.json")
+        in
+        let runspec_json =
+          Runspec.to_string ~ctx ~request ~spec ~variants:o.variants ~sources
+            ~ssh:pl.p_ssh ~slot
+        in
+        Util.write_file runspec_path runspec_json;
+        if o.format = "json" then print_string runspec_json
+        else begin
+          print_string spec.config_yaml;
+          print_newline ();
+          print_endline "# --- environment ---";
+          List.iter
+            (fun (k, v) -> Printf.printf "export %s=%s\n" k (Filename.quote v))
+            spec.env;
+          Printf.printf "\n# estimate: %s\n" (Cost.explain spec.cost);
+          Printf.printf "# timeout:  %s\n"
+            (Cost.human (float_of_int (Runspec.timeout_seconds ~cost:spec.cost)));
+          Printf.printf "# config:   %s\n" config_path;
+          Printf.printf "# run spec: %s\n" runspec_path;
+          List.iter (fun w -> Printf.printf "# warning: %s\n" w) spec.warnings
+        end;
         if o.check then
           match Bridge.validate (bridge_of o) ~config:config_path with
           | Ok () -> print_endline "# validate(): OK"

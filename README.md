@@ -23,9 +23,22 @@ bench-gen spec  --comment "/bench" \
                 --out /tmp --check
 ```
 
-`spec` prints the generated config, the environment to run it with, and a cost
-estimate; `--check` additionally pushes the config through running-ng's real
+`spec` writes two files into `--out` and prints one of them:
+
+| file | what it is |
+|---|---|
+| `<id>.yml` | the running-ng config |
+| `<id>.runspec.json` | **the run spec** — the complete, versioned description of the run: config inline, environment, pinned source refs, command, artifacts to fetch back, and limits |
+
+The run spec is the S0 → S1 interface and the provenance record archived beside
+the results. It is documented in [docs/RUNSPEC.md](docs/RUNSPEC.md) — read that
+before writing anything that consumes it. `--format json` prints it instead of
+the config; `--check` additionally pushes the config through running-ng's real
 `validate()` + `validate_tags()`.
+
+A YAML file alone would not do: `tag=` becomes the `RUNNING_TAG` *environment
+variable* (running-ng's `apply_tag_filter()` reads it from there), so the config
+does not describe the run on its own.
 
 ## The pieces this sits between
 

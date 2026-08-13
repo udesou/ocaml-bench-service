@@ -57,6 +57,9 @@ hard-won details.
 - `lib/service_config.ml` / `lib/authz.ml` — bot identity, allowlist, machine
   registry.
 - `lib/help.ml` — `/bench help`, generated from facts + vocab.
+- `lib/runspec.ml` — the S0 → S1 interface, specified in `docs/RUNSPEC.md`.
+  **Change both together.** Self-contained (config inline, not by path), pins
+  running-ng *and* macro-benches by ref, and carries no credentials.
 - `lib/bridge.ml` — the only caller of python.
 - `scripts/rng_helper.py` — `facts` | `validate` | `tagfilter`.
 - `test/` — table tests against `test/fixtures/` snapshots.
@@ -88,8 +91,12 @@ hard-won details.
   scalar at top level is a `combine()` `TypeError`. The base default is
   **3**, not 1, so the value is always emitted explicitly.
 - **`tag=` is not a config field.** It becomes `RUNNING_TAG`, consumed by
-  `apply_tag_filter()`. The generator's output is therefore a *triple* (config,
-  env, args), not a YAML file.
+  `apply_tag_filter()`. This is why the deliverable is a run spec and not a YAML
+  file — a config alone does not describe the run.
+- **The macro-benches commit is part of run identity.** Binaries are cached as
+  `<benchmark>-<runtime>` and the runtime name encodes only the *compiler* sha, so
+  changing benchmark source does not invalidate a cached binary. `sources` in the
+  run spec pins both repos; the runner writes back the commits it used.
 - **The measurement modifier chain is derived, not hardcoded** (`Gen.modifier_chain`).
   running-ng #15 (`fb9751c`, on `adding-ocaml-support`) moved the sequential
   `re`/`md` onto the benchmarks as a suite/program `ocamlrunparam:` field — five
