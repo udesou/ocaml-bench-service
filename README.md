@@ -95,6 +95,11 @@ are capped to a few active runs, and machines can be drained by admins.
 Still deliberately missing: run keys (so no result reuse yet) and anything
 that executes — the queue's far side is API B, the agent.
 
+Standing a server up (a laptop now, a VPS later — the service moves with its
+state directory, not with code changes) is `scripts/server-setup.sh` +
+`scripts/serve.sh`; the whole recipe, including wiring the fork's bot, is in
+[docs/DEPLOY.md](docs/DEPLOY.md).
+
 A config file alone would not be enough, which is the main reason a "run spec"
 exists at all: the benchmark selection travels as the `RUNNING_TAG` *environment
 variable*, because that is where running-ng's `apply_tag_filter()` reads it from.
@@ -233,6 +238,7 @@ paths, not a transport.
 | `rpc/` | the Cap'n Proto adapter: the schema and the service/client glue |
 | `bin/bench_serve.ml` | the server daemon; writes the capability files |
 | `bot/` | the GitHub Action for `/bench` PR comments, and its setup notes |
+| `scripts/serve.sh`, `docs/DEPLOY.md` | one deployment = one env file; the move-hosts recipe |
 | `lib/request.ml` | the comment grammar |
 | `lib/gen.ml` | request + suite definitions → a running-ng config |
 | `lib/runspec.ml` | the run spec, specified in `docs/RUNSPEC.md` |

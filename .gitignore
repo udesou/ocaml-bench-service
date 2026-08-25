@@ -4,4 +4,6 @@ _build/
 /_opam/
 # The live registry: real allowlist, real bot account, real paths.
 /service.json
+# One deployment's address and paths.
+/server.env
 _fixture_base.yml
