@@ -37,6 +37,9 @@ type pr_context = {
   comment_url : string;
   head_sha : string option;
       (** if the requester saw it; else the server resolves *)
+  base_ref : string option;
+      (** the PR's target branch, if the requester knows it; the merge-base
+          baseline is computed against it (default: trunk) *)
 }
 
 type origin_kind = Pr_comment of pr_context | Cli (* later: Web, Schedule *)
@@ -118,6 +121,11 @@ type submit_outcome =
   | Accepted of accepted  (** a new run was queued *)
   | Reused of reused  (** run key matched a completed run (§8.1) *)
   | Duplicate of { run_id : string; links : links }  (** idempotency key hit *)
+  | Answered of { markdown : string }
+      (** commands that are answers, not runs (/bench help, /bench cancel):
+          the server acts and replies; requesters post the markdown verbatim.
+          Exists because the grammar lives in the server (Q13): a requester
+          cannot pre-parse these and route them itself (Q18) *)
 
 type run_state =
   | Queued
@@ -319,6 +327,76 @@ let json_of_error (e : error) =
       ("error_markdown", str e.error_markdown);
     ]
 
+let error_code_of_string = function
+  | "bad_command" -> Some Bad_command
+  | "unauthorized" -> Some Unauthorized
+  | "forbidden" -> Some Forbidden
+  | "over_budget" -> Some Over_budget
+  | "user_queue_full" -> Some User_queue_full
+  | "unknown_machine" -> Some Unknown_machine
+  | "machine_drained" -> Some Machine_drained
+  | "not_found" -> Some Not_found
+  | _ -> None
+
+(* origin round-trips: it is built by a requester and decoded by the transport
+   adapter on the server side. *)
+let json_of_origin (o : origin) =
+  let kind, pr =
+    match o.kind with
+    | Cli -> ("cli", `Null)
+    | Pr_comment c ->
+      ( "pr_comment",
+        `Assoc
+          [
+            ("repo", str c.repo);
+            ("number", `Int c.number);
+            ("url", str c.url);
+            ("comment_id", str c.comment_id);
+            ("comment_url", str c.comment_url);
+            ("head_sha", opt_str c.head_sha);
+            ("base_ref", opt_str c.base_ref);
+          ] )
+  in
+  `Assoc [ ("kind", str kind); ("id", str o.id); ("pr", pr) ]
+
+let origin_of_json j =
+  let mem k = function
+    | `Assoc kvs -> (
+      match List.assoc_opt k kvs with Some v -> v | None -> `Null)
+    | _ -> `Null
+  in
+  let s j = match j with `String s -> Some s | _ -> None in
+  match (s (mem "kind" j), s (mem "id" j)) with
+  | Some "cli", Some id -> Ok { kind = Cli; id }
+  | Some "pr_comment", Some id -> (
+    let pr = mem "pr" j in
+    match
+      ( s (mem "repo" pr),
+        mem "number" pr,
+        s (mem "url" pr),
+        s (mem "comment_id" pr),
+        s (mem "comment_url" pr) )
+    with
+    | Some repo, `Int number, Some url, Some comment_id, Some comment_url ->
+      Ok
+        {
+          kind =
+            Pr_comment
+              {
+                repo;
+                number;
+                url;
+                comment_id;
+                comment_url;
+                head_sha = s (mem "head_sha" pr);
+                base_ref = s (mem "base_ref" pr);
+              };
+          id;
+        }
+    | _ -> Error "pr_comment origin is missing a required field"
+  )
+  | _ -> Error "origin needs a kind (cli | pr_comment) and an id"
+
 let json_of_runtime_pin (p : runtime_pin) =
   `Assoc
     [
@@ -419,6 +497,8 @@ let json_of_submit_outcome = function
         ("run_id", str run_id);
         ("links", json_of_links links);
       ]
+  | Answered { markdown } ->
+    `Assoc [ ("outcome", str "answered"); ("markdown", str markdown) ]
 
 let json_of_vocab (v : vocab) =
   `Assoc

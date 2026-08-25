@@ -229,6 +229,29 @@ let render_ack deps ~run_id ~(request : Request.t) ~(spec : Gen.t) ~machine
 
 (* --- the API A functions ---------------------------------------------------- *)
 
+(* Post-auth cancellation, shared by the cancel operation and `/bench cancel`
+   arriving through submit (Q18). *)
+let cancel_run deps (auth : Api.auth) ~run_id =
+  match meta_of deps run_id with
+  | None -> err Api.Not_found "No run `%s` is known to this server." run_id
+  | Some m ->
+    if auth.Api.role <> Api.Admin && m.requested_by <> auth.Api.login then
+      err Api.Forbidden
+        "Run `%s` belongs to @%s; only its owner or an admin may cancel it."
+        run_id m.requested_by
+    else if m.state <> Api.Queued then
+      err Api.Bad_command
+        "Run `%s` is %s; only queued runs can be cancelled in this build \
+         (nothing executes yet)."
+        run_id
+        (Api.string_of_run_state m.state)
+    else begin
+      save_meta deps
+        { m with state = Api.Cancelled; finished_at = Some (iso_now ()) };
+      stamp deps run_id "cancelled";
+      Ok ()
+    end
+
 let submit deps (auth0 : Api.auth) (s : Api.submit) =
   let* auth = effective_auth deps auth0 in
   let* request =
@@ -237,16 +260,13 @@ let submit deps (auth0 : Api.auth) (s : Api.submit) =
     | Error e -> Error { Api.code = Api.Bad_command; error_markdown = e }
   in
   match request.Request.action with
-  (* GAP raised on the document: submit_outcome has no arm for help/cancel
-     commands, yet the grammar lives in the server (Q13), so a bot cannot
-     pre-parse them.  Until that is decided: help answers through the error
-     envelope (whose text is postable verbatim, which is exactly what a bot
-     does with it), cancel points at the cancel operation. *)
-  | Request.Help ->
-    Error { Api.code = Api.Bad_command; error_markdown = render_help deps }
+  (* Non-run commands are answers, not runs (Q18): the server acts and the
+     requester posts the markdown verbatim -- it cannot pre-parse and route
+     these itself, because the grammar lives here (Q13). *)
+  | Request.Help -> Ok (Api.Answered { markdown = render_help deps })
   | Request.Cancel id ->
-    err Api.Bad_command
-      "Cancellation is its own operation: run `bench-cli cancel %s`." id
+    let* () = cancel_run deps auth ~run_id:id in
+    Ok (Api.Answered { markdown = Printf.sprintf "Cancelled `%s`." id })
   | Request.Run | Request.Rerun ->
     let* () = Authz.vet_request auth request in
     let* machine =
@@ -489,25 +509,7 @@ let events deps (auth0 : Api.auth) ~run_id ~since =
 
 let cancel deps (auth0 : Api.auth) ~run_id =
   let* auth = effective_auth deps auth0 in
-  match meta_of deps run_id with
-  | None -> err Api.Not_found "No run `%s` is known to this server." run_id
-  | Some m ->
-    if auth.Api.role <> Api.Admin && m.requested_by <> auth.Api.login then
-      err Api.Forbidden
-        "Run `%s` belongs to @%s; only its owner or an admin may cancel it."
-        run_id m.requested_by
-    else if m.state <> Api.Queued then
-      err Api.Bad_command
-        "Run `%s` is %s; only queued runs can be cancelled in this build \
-         (nothing executes yet)."
-        run_id
-        (Api.string_of_run_state m.state)
-    else begin
-      save_meta deps
-        { m with state = Api.Cancelled; finished_at = Some (iso_now ()) };
-      stamp deps run_id "cancelled";
-      Ok ()
-    end
+  cancel_run deps auth ~run_id
 
 let list deps (auth0 : Api.auth) (filter : Api.filter) (page : Api.page) =
   let* _auth = effective_auth deps auth0 in

@@ -20,6 +20,13 @@
    schedules it on a bench machine, and publishes contract artifacts plus a \
    report. See benchmarking-service-design.md.")
  (depends
-  (ocaml (>= 4.14))
+  (ocaml (>= 5.2))
   (dune (>= 3.16))
-  (yojson (>= 2.0))))
+  (yojson (>= 2.0))
+  (capnp (>= 3.6))
+  (capnp-rpc (>= 2.1))
+  (capnp-rpc-unix (>= 2.1))
+  eio_main
+  logs
+  fmt
+  (mirage-crypto-rng (>= 1.2))))

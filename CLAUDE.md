@@ -49,12 +49,25 @@ document is required reading.
 - `lib/server.ml` — the request server: `Api.REQUEST_API` over the existing
   pipeline, with a **file-backed queue** (`<state>/runs/<run_id>/` holding
   meta.json + request.json + runspec.json + config.yml; that directory IS the
-  queue row a future agent claims). In-process, offline, nothing executes —
-  the module's header states the exact scope. The transport wraps this module;
-  do not fork a second submit path.
-- `lib/resolver.ml` — user input → pinned runtimes. `Resolver.offline` passes
-  versions and shas and refuses refs/PR origins with instructions; the
-  GitHub-backed resolver replaces the record without touching the server.
+  queue row a future agent claims). Nothing executes — the module's header
+  states the exact scope. Transports wrap this module; do not fork a second
+  submit path.
+- `lib/resolver.ml` — user input → pinned runtimes. `Resolver.github` is the
+  server's whole GitHub dependency and it is only `git`: ls-remote for tags,
+  branches and `refs/pull/N/head`, plus a bare cache repo for the merge base.
+  No API, no token. `Resolver.offline` (versions + shas only) keeps tests and
+  the live check hermetic.
+- `rpc/` — the Cap'n Proto adapter (Q15): `bench_api.capnp` (one method per
+  REQUEST_API function) and `rpc.ml` (service + typed client). v1 wire
+  encoding: record payloads travel as the lib/api.ml JSON, errors as the
+  envelope JSON in the exception reason; promoting payloads to capnp structs
+  is additive later. Building it needs the `capnp` system binary
+  (~/.local/bin on this machine; the Makefile exports the PATH).
+- `bin/bench_serve.ml` — the daemon. Writes `<caps>/<login>.cap` per
+  configured login + `bot.cap` at startup: the capability file IS the access
+  (and the identity — there is no --login anywhere).
+- `bot/` — the fork's GitHub Action: bot.cap + a prebuilt bench-cli, posts
+  back whatever markdown the server returns.
 - `lib/request.ml` — the comment grammar. Pure: no network, no knowledge of
   which tags exist, no cost decision, no roles (admin-only keys parse for
   everyone and are refused in Authz). Rejection messages are the product (they
@@ -109,10 +122,14 @@ document is required reading.
   of a *completed* run is the run key's job (§8.1), which nothing computes yet.
   Widening the duplicate check to finished runs would make rerunning a command
   impossible.
-- **`submit` has no outcome arm for `/bench help` / `/bench cancel`** — a gap
-  raised on the architecture document. Until decided, the server answers help
-  through the error envelope (its text is postable verbatim, which is what a
-  bot does with it) and points cancel at the cancel operation.
+- **Non-run commands are `Answered` outcomes (Q18).** `/bench help` and
+  `/bench cancel <id>` through `submit` make the server act and reply with
+  postable markdown; requesters never pre-parse (the grammar lives in the
+  server, Q13). Do not route them to the error envelope.
+- **The wire never carries a login for users.** The capability file is the
+  identity; only `bot.cap` may assert one (the commenter GitHub verified).
+  CLI idempotency ids are rewritten server-side to `cli:<login>` in rpc.ml —
+  a client cannot dodge or forge the duplicate check.
 - **`comparisons:` in a running-ng config is `label`/`a`/`b` (+ `mode`), NOT the
   contract's `kind`/`over`/`baseline`/`variants`.** `contract/native.py::
   _map_comparisons` translates a/b → contract comparisons on emission. Emitting

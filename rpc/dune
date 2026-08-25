@@ -1,0 +1,15 @@
+(library
+ (name bench_rpc)
+ (libraries bench_service capnp capnp-rpc yojson)
+ ; the generated module triggers unused-value warnings; keep our own code at
+ ; the default level by silencing only what codegen produces
+ (flags
+  (:standard -w -53-55-32-27-26)))
+
+; capnpc-ocaml comes from the opam `capnp` package; the `capnp` tool itself is
+; a system binary (see README: it lives in ~/.local/bin on the dev machine)
+(rule
+ (targets bench_api.ml bench_api.mli)
+ (deps bench_api.capnp)
+ (action
+  (run capnp compile -o %{bin:capnpc-ocaml} %{deps})))

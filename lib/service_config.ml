@@ -32,6 +32,8 @@ type machine = {
 type t = {
   bot : bot;
   results_repo : string;
+  compiler_repo : string;
+      (* clone URL that vs= versions/branches resolve against *)
   allowlist : string list;
   admins : string list;
   allow_associations : string list;
@@ -111,6 +113,13 @@ let of_json j =
         {
           bot = { account; token_env };
           results_repo;
+          compiler_repo =
+            (match
+               str ~default:"https://github.com/ocaml/ocaml"
+                 (member "compiler_repo" j)
+             with
+            | Ok s -> s
+            | Error _ -> "https://github.com/ocaml/ocaml");
           allowlist;
           admins;
           allow_associations = strings (member "allow_associations" j);

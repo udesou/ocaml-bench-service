@@ -1,3 +1,10 @@
-(executables
- (names main bench_cli)
+(executable
+ (name main)
+ (modules main)
  (libraries bench_service yojson))
+
+(executables
+ (names bench_cli bench_serve)
+ (modules bench_cli bench_serve)
+ (libraries bench_service bench_rpc yojson capnp-rpc-unix eio_main
+   mirage-crypto-rng.unix logs.fmt))

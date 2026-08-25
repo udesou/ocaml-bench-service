@@ -12,6 +12,10 @@
 # while a benchmark is running -- opam would serialise against running-ng's own
 # provisioning. `make check-idle` tells you whether it is safe.
 
+# The capnp schema compiler is a system tool (schema codegen in rpc/); on
+# machines without sudo it is built from source into ~/.local/bin.
+export PATH := $(HOME)/.local/bin:$(PATH)
+
 OCAML_VERSION ?= 5.4.1
 OPAM          ?= opam
 SWITCH        ?= .

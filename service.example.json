@@ -20,7 +20,10 @@
     "machines      the slot registry. One entry = one concurrent run, because",
     "              the opam root lock is what serialises runs. No ssh entries:",
     "              the server never connects to a bench machine (the agent",
-    "              dials out), so a machine is names and paths, not a transport."
+    "              dials out), so a machine is names and paths, not a transport.",
+    "compiler_repo the clone URL that vs= versions/branches resolve against",
+    "              (release tags, branch heads); PR heads resolve against the",
+    "              PR's own repository."
   ],
 
   "bot": {
@@ -29,6 +32,7 @@
   },
 
   "results_repo": "udesou/ocaml-bench-results",
+  "compiler_repo": "https://github.com/ocaml/ocaml",
 
   "allowlist": ["udesou"],
   "admins": ["udesou"],

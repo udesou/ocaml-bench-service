@@ -1,5 +1,5 @@
-(test
- (name test_bench_gen)
- (libraries bench_service yojson unix)
+(tests
+ (names test_bench_gen test_rpc)
+ (libraries bench_service bench_rpc yojson unix eio_main capnp-rpc)
  (deps
   (glob_files fixtures/*)))

@@ -11,12 +11,14 @@ It is the request-and-scheduling layer around three existing pieces: the
 contract and viewer. It deliberately reimplements none of them.
 
 > **Status: nothing is measured yet.** What works today is the front half,
-> end to end: `bench-cli submit "/bench …"` goes through a real Request API
-> server (`lib/server.ml`, in-process for now) — allowlist and roles, grammar,
-> validation, cost cap — and lands as a run-spec directory in a file-backed
-> queue, with `status`/`list`/`cancel` working against it. Nothing drains that
-> queue yet: the bench agent (API B) is the next piece of work. See
-> [Roadmap](#roadmap).
+> end to end and over the wire: `bench-cli submit "/bench …"` reaches the
+> `bench-serve` daemon over Cap'n Proto — allowlist and roles, grammar,
+> validation, GitHub resolution (PR head, merge base, release tags), cost
+> cap — and lands as a run-spec directory in a file-backed queue, with
+> `status`/`list`/`cancel` working against it, plus a GitHub Action
+> ([bot/](bot/)) that does the same from a `/bench` PR comment. Nothing
+> drains that queue yet: the bench agent (API B) is the next piece of work.
+> See [Roadmap](#roadmap).
 
 ## What works today
 
@@ -50,34 +52,48 @@ writing anything that consumes it. `--format json` prints it instead of the
 config, and `--check` additionally pushes the generated config through
 running-ng's own `validate()` and `validate_tags()`.
 
-## The server and its client
+## The server and its clients
 
-`bench-cli` is the thin client of the Request API — it parses nothing and
-renders nothing, it sends the raw command and prints whatever markdown comes
-back. The server it talks to (`lib/server.ml`) is instantiated **in the same
-process** for now; a wire transport wraps the same module later without
-changing either side.
+The transport is **Cap'n Proto** (Q15): the Request API stays an OCaml module
+signature (`lib/api.ml`), `rpc/bench_api.capnp` is its wire schema, and a
+token is a **capability file** — `bench-serve` writes `<login>.cap` for every
+configured login (plus `bot.cap`) at startup, and handing someone their file
+is how access is granted. There is no `--login` anywhere: the capability *is*
+the identity, and the role (user/admin) is still derived server-side from
+`service.json` on every call.
 
 ```sh
-bench-cli submit "/bench tag=small invocations=1 vs=5.5.0,c0f8c8ce…" \
-  --service-config service.json --state-dir ~/bench-queue
-bench-cli status run-20260825-001
-bench-cli list --mine
+bench-serve --service-config service.json \
+  --listen tcp:0.0.0.0:7000 --public-address tcp:bench.example.org:7000
+
+bench-cli submit "/bench tag=small invocations=1 vs=5.4.1,trunk" --cap me.cap
+bench-cli status run-20260825-001 --cap me.cap
+bench-cli list
 bench-cli cancel run-20260825-001
 bench-cli help                # the /bench reference, served by the server
 ```
+
+`bench-cli` is the thin client (Q13): it parses nothing of the grammar and
+renders nothing — it sends the raw command and prints whatever markdown comes
+back. `/bench help` and `/bench cancel <id>` come back as **Answered**
+outcomes: the server acts and replies, so a bot can post the result verbatim
+without understanding it. The PR bot ([bot/](bot/)) is the same client run
+from a GitHub Action with `bot.cap`, asserting the commenter it verified.
+
+The server resolves everything to shas at submission (`lib/resolver.ml`,
+plain `git`, no API tokens): release tags and branches for `vs=`, the PR head
+via `refs/pull/N/head`, and the merge-base baseline in a local git cache.
+`--resolver offline` restricts to versions and commit shas for hermetic use.
 
 Every accepted run becomes a directory under `<state-dir>/runs/<run_id>/` —
 `meta.json` (the index record), `request.json` (who asked, when, verbatim),
 `runspec.json` and the generated config. That directory *is* the queue row;
 the future bench agent claims work by draining it. Submissions are
-deduplicated by `(origin id, normalized command)` against active runs, users
+deduplicated by `(login, normalized command)` while a run is active, users
 are capped to a few active runs, and machines can be drained by admins.
 
-What the server deliberately does **not** do yet: talk to GitHub (so `vs=`
-takes versions and commit shas; refs like `trunk` and PR-comment submissions
-are refused with instructions), compute run keys (so no result reuse), or
-execute anything.
+Still deliberately missing: run keys (so no result reuse yet) and anything
+that executes — the queue's far side is API B, the agent.
 
 A config file alone would not be enough, which is the main reason a "run spec"
 exists at all: the benchmark selection travels as the `RUNNING_TAG` *environment
@@ -173,8 +189,10 @@ make live            # generate against running-ng and validate through it
 make check           # all three
 ```
 
-You also need `python3` (with PyYAML) and a checkout of running-ng, which
-`make live` reads. Config merge rules, tag filtering and validation are answered
+You also need `python3` (with PyYAML), a checkout of running-ng, which
+`make live` reads, and the `capnp` schema compiler (the `capnproto` system
+package; on machines without sudo, build it from source into `~/.local` — the
+Makefile puts `~/.local/bin` on PATH). Config merge rules, tag filtering and validation are answered
 by running-ng itself through `scripts/rng_helper.py` — the single bridge to it —
 rather than reimplemented here, because two implementations of the same implicit
 schema is exactly how this kind of pipeline drifts.
@@ -211,7 +229,10 @@ paths, not a transport.
 |---|---|
 | `lib/api.ml` | the Request API: the §5 types and module signature every requester speaks |
 | `lib/server.ml` | the request server: API A over a file-backed queue |
-| `lib/resolver.ml` | user input → pinned runtimes; offline rules now, GitHub later |
+| `lib/resolver.ml` | user input → pinned runtimes: releases, branches, PR heads, merge bases (plain git) |
+| `rpc/` | the Cap'n Proto adapter: the schema and the service/client glue |
+| `bin/bench_serve.ml` | the server daemon; writes the capability files |
+| `bot/` | the GitHub Action for `/bench` PR comments, and its setup notes |
 | `lib/request.ml` | the comment grammar |
 | `lib/gen.ml` | request + suite definitions → a running-ng config |
 | `lib/runspec.ml` | the run spec, specified in `docs/RUNSPEC.md` |
@@ -228,19 +249,20 @@ paths, not a transport.
 1. ~~Turn a `/bench` comment into a validated run spec.~~ **Done.**
 2. ~~Fix the Request API: types, roles, vocabulary (`lib/api.ml`).~~ **Done.**
 3. ~~Queue it: a server implementing `Api.REQUEST_API` behind a file-backed
-   queue, with a thin CLI client.~~ **Done** — in-process and offline; still
-   to come here: the wire transport (capnp), GitHub resolution
-   (refs → shas, PR head + merge base), and result reuse by run key
-   (`lib/run_key.ml`).
-4. **Run it.** An agent on the bench machine that *dials out* to claim work
+   queue.~~ **Done.**
+4. ~~Wire it: Cap'n Proto transport with capability-file auth, `bench-cli`,
+   GitHub resolution (PR head, merge base, tags, branches), and the
+   `/bench`-comment Action for the fork.~~ **Done** — still to come here:
+   result reuse by run key (`lib/run_key.ml`), and the run-completion comment
+   (needs step 5).
+5. **Run it.** An agent on the bench machine that *dials out* to claim work
    from the queue (the server never connects to a machine): check out the
    pinned sources, provision or reuse compiler switches, run under a timeout
    in its own process group, and upload artifacts — on failure as well as
    success. Leases so a restart cannot lose an hour of work.
-5. **Trigger it.** A GitHub workflow on `issue_comment`, an immediate
-   acknowledgement, and a summary comment when the run finishes.
 6. **Show it.** Results published as data-contract artifacts and rendered by the
-   dashboard, with a regression judgement that accounts for machine noise.
+   dashboard, with a regression judgement that accounts for machine noise, and
+   the summary comment posted back to the PR.
 
 ## Licence
 

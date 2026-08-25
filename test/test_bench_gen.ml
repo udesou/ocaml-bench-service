@@ -785,6 +785,130 @@ let test_api_json () =
   check_eq_opt ~name:"outcomes are tagged" ~expected:(Some "duplicate")
     ~actual:(jstr (member "outcome" j))
 
+(* --- 5b. the GitHub resolver (lib/resolver.ml) ----------------------------- *)
+
+(* Exercised against a scratch git repository, not github.com: everything the
+   resolver does is plain git (ls-remote, fetch, merge-base), so a local repo
+   with a tag, a moving trunk and a refs/pull/N/head covers it offline. *)
+let run_out cmd =
+  let ic = Unix.open_process_in cmd in
+  let buf = Buffer.create 256 in
+  (try
+     while true do
+       Buffer.add_channel buf ic 1
+     done
+   with End_of_file -> ());
+  match Unix.close_process_in ic with
+  | Unix.WEXITED 0 -> String.trim (Buffer.contents buf)
+  | _ -> failwith ("command failed: " ^ cmd)
+
+let scratch_compiler_repo root =
+  let repo = Filename.concat root "compiler" in
+  let sh fmt =
+    Printf.ksprintf
+      (fun c ->
+        if Sys.command (c ^ " >/dev/null 2>&1") <> 0 then failwith c)
+      fmt
+  in
+  let git fmt =
+    Printf.ksprintf
+      (fun args ->
+        sh "git -C %s -c user.email=t@t -c user.name=t %s"
+          (Filename.quote repo) args)
+      fmt
+  in
+  sh "mkdir -p %s" (Filename.quote repo);
+  git "init -q -b trunk .";
+  git "commit -q --allow-empty -m base";
+  let rev r =
+    run_out (Printf.sprintf "git -C %s rev-parse %s" (Filename.quote repo) r)
+  in
+  let base_sha = rev "HEAD" in
+  git "tag -a 5.99.0 -m release";
+  (* the PR: one commit on a branch off the base, advertised as a pull head *)
+  git "checkout -q -b feature";
+  git "commit -q --allow-empty -m change";
+  let head_sha = rev "HEAD" in
+  git "update-ref refs/pull/7/head refs/heads/feature";
+  (* trunk moves on, so the merge base is neither branch tip *)
+  git "checkout -q trunk";
+  git "commit -q --allow-empty -m more";
+  let trunk_sha = rev "trunk" in
+  (repo, base_sha, head_sha, trunk_sha)
+
+let test_github_resolver () =
+  let root =
+    Filename.concat
+      (Filename.get_temp_dir_name ())
+      (Printf.sprintf "bench-resolver-test-%d" (Unix.getpid ()))
+  in
+  let repo, base_sha, head_sha, trunk_sha = scratch_compiler_repo root in
+  let resolver =
+    Resolver.github
+      {
+        (Resolver.github_defaults ~cache_dir:(Filename.concat root "cache"))
+        with
+        compiler_repo = repo;
+        url_of_repo = (fun _ -> repo);
+      }
+  in
+  let cli = { Api.kind = Api.Cli; id = "cli" } in
+  let short sha = String.sub sha 0 7 in
+  (match resolver.Resolver.variants ~origin:cli ~vs:[ "5.99.0"; "trunk" ] with
+  | Ok [ b; c ] ->
+    check_true ~name:"a release tag pins its tagged commit"
+      (b.Variant.spec = Variant.Commit base_sha
+      && b.Variant.role = Variant.Baseline);
+    check_eq ~name:"the runtime name carries meaning AND the sha"
+      ~expected:("ocaml-5.99.0-" ^ short base_sha)
+      ~actual:(Variant.runtime_name b);
+    check_true ~name:"a branch resolves to its tip"
+      (c.Variant.spec = Variant.Commit trunk_sha)
+  | Ok _ -> fail "resolver: expected two variants"
+  | Error e -> fail "resolver vs: %s" (markdown e));
+  (match resolver.Resolver.variants ~origin:cli ~vs:[ "not-a-thing" ] with
+  | Error e ->
+    check_contains ~name:"an unknown ref is refused with the choices"
+      ~needle:"neither a release tag" (markdown e)
+  | Ok _ -> fail "unknown refs should be refused");
+  let pr_origin ?head_sha ?base_ref () =
+    {
+      Api.kind =
+        Api.Pr_comment
+          {
+            Api.repo = "any/thing";
+            number = 7;
+            url = "u";
+            comment_id = "c1";
+            comment_url = "cu";
+            head_sha;
+            base_ref;
+          };
+      id = "c1";
+    }
+  in
+  (* A bare /bench on a PR: baseline = merge base, candidate = the PR head. *)
+  (match resolver.Resolver.variants ~origin:(pr_origin ()) ~vs:[] with
+  | Ok [ b; h ] ->
+    check_true ~name:"the PR baseline is the merge base"
+      (b.Variant.spec = Variant.Commit base_sha
+      && b.Variant.role = Variant.Baseline);
+    check_eq ~name:"the PR head is named pr-<n>-<sha>"
+      ~expected:("ocaml-pr-7-" ^ short head_sha)
+      ~actual:(Variant.runtime_name h)
+  | Ok _ -> fail "PR resolution: expected baseline + head"
+  | Error e -> fail "PR resolution: %s" (markdown e));
+  (* vs= on a PR overrides the baseline; the head stays a candidate. *)
+  match resolver.Resolver.variants ~origin:(pr_origin ()) ~vs:[ "5.99.0" ] with
+  | Ok (b :: h :: _) ->
+    check_true ~name:"vs= chooses the PR baseline"
+      (b.Variant.label = "5.99.0" && b.Variant.role = Variant.Baseline);
+    check_true ~name:"the PR head stays the candidate"
+      (h.Variant.spec = Variant.Commit head_sha
+      && h.Variant.role = Variant.Candidate)
+  | Ok _ -> fail "PR + vs=: expected at least two variants"
+  | Error e -> fail "PR + vs=: %s" (markdown e)
+
 (* --- 6. the request server (lib/server.ml) -------------------------------- *)
 
 (* The server over injected deps: fixture facts, a fake tag filter, the
@@ -917,6 +1041,7 @@ let test_server () =
             comment_id = "c1";
             comment_url = "https://github.com/ocaml/ocaml/pull/1#c1";
             head_sha = None;
+            base_ref = None;
           };
       id = "c1";
     }
@@ -956,13 +1081,29 @@ let test_server () =
     | Error e -> fail "undrain: %s" (markdown e))
   | Error e -> fail "drain: %s" (markdown e));
 
-  (* /bench help through submit: postable text, wherever it travels (a raised
-     gap: submit_outcome has no arm for it yet). *)
+  (* Non-run commands are Answered outcomes (Q18): the server acts, the
+     requester posts the markdown. *)
   (match submit ~origin:"cli:j" user "/bench help" with
-  | Error e ->
+  | Ok (Api.Answered { markdown = md }) ->
     check_contains ~name:"submit answers /bench help with the reference"
-      ~needle:"`/bench` usage" (markdown e)
-  | Ok _ -> fail "/bench help should answer with the reference");
+      ~needle:"`/bench` usage" md
+  | _ -> fail "/bench help should be Answered");
+  (match submit ~origin:"cli:k" watcher ("/bench tag=small " ^ vs) with
+  | Ok (Api.Accepted a) -> (
+    match
+      submit ~origin:"cli:l" watcher ("/bench cancel " ^ a.Api.run_id)
+    with
+    | Ok (Api.Answered { markdown = md }) -> (
+      check_contains ~name:"submit performs /bench cancel" ~needle:"Cancelled"
+        md;
+      match Server.status deps watcher ~run_id:a.Api.run_id with
+      | Ok st ->
+        check_true ~name:"cancel through submit lands"
+          (st.Api.state = Api.Cancelled)
+      | Error e -> fail "status after comment-cancel: %s" (markdown e))
+    | Ok _ -> fail "/bench cancel should be Answered"
+    | Error e -> fail "comment-cancel: %s" (markdown e))
+  | _ -> fail "watcher's run should be accepted");
 
   (* The index: newest first, filterable. *)
   match
@@ -1014,6 +1155,7 @@ let () =
   test_api_json ();
   test_authz ();
   test_admin_keys ();
+  test_github_resolver ();
   test_server ();
   test_help ();
   ok "done";

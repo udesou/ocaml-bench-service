@@ -135,8 +135,9 @@ check_rejects "unsweepable"     "/bench sweep=nonsense:1"   "Cannot sweep"
 check_rejects "old spelling"    "/bench iterations=1"       "invocations="
 
 echo
-echo "bench-cli (in-process server, file-backed queue):"
+echo "client -> server over Cap'n Proto (bench-serve + bench-cli):"
 SVC="$OUT/service.json"
+STATE="$OUT/state"
 cat > "$SVC" <<EOF
 { "bot": {"account":"bot","token_env":"TOK"},
   "results_repo":"u/r",
@@ -144,25 +145,52 @@ cat > "$SVC" <<EOF
   "machines":[{"name":"monolith","default":true,
                "macro_bench_dir":"$HOME/macro-benches","log_dir":"$OUT/logs"}] }
 EOF
-cli() {
-  local sub="$1"; shift
-  opam exec --switch="$SWITCH" -- dune exec --no-build bin/bench_cli.exe -- \
-    "$sub" "$@" --service-config "$SVC" --state-dir "$OUT/state" \
-    --login tester --base-config "$BASE" --vocab "$VOCAB"
-}
-n=$((n + 1))
-ack=$(cli submit "/bench tag=small invocations=1 vs=5.5.0,c0f8c8ceef751fb3a99652d3d52399db3d1c2aae" 2>&1)
-run_id=$(grep -oE 'run-[0-9]{8}-[0-9]{3}' <<<"$ack" | head -1)
-if [ -n "$run_id" ] \
-   && cli status "$run_id" 2>&1 | grep -q '"state": "queued"' \
-   && cli list 2>&1 | grep -q "$run_id" \
-   && cli cancel "$run_id" 2>&1 | grep -q "cancelled $run_id" \
-   && [ -f "$OUT/state/runs/$run_id/runspec.json" ]; then
-  echo "  ok    submit -> status -> list -> cancel ($run_id)"
-else
-  echo "  FAIL  bench-cli round trip"
-  sed 's/^/          /' <<<"$ack" | tail -8
+opam exec --switch="$SWITCH" -- dune exec --no-build bin/bench_serve.exe -- \
+  --service-config "$SVC" --state-dir "$STATE" --resolver offline \
+  --base-config "$BASE" --vocab "$VOCAB" \
+  --listen "unix:$OUT/server.sock" > "$OUT/serve.log" 2>&1 &
+SERVE_PID=$!
+trap 'kill "$SERVE_PID" 2>/dev/null; rm -rf "$OUT"' EXIT
+for _ in $(seq 1 100); do
+  [ -f "$STATE/caps/tester.cap" ] && break
+  sleep 0.2
+done
+if [ ! -f "$STATE/caps/tester.cap" ]; then
+  echo "  FAIL  bench-serve did not come up"
+  sed 's/^/          /' "$OUT/serve.log" | tail -10
   fails=$((fails + 1))
+else
+  cli() {
+    local sub="$1"; shift
+    opam exec --switch="$SWITCH" -- dune exec --no-build bin/bench_cli.exe -- \
+      "$sub" --cap "$STATE/caps/tester.cap" "$@"
+  }
+  n=$((n + 1))
+  ack=$(cli submit "/bench tag=small invocations=1 vs=5.5.0,c0f8c8ceef751fb3a99652d3d52399db3d1c2aae" 2>&1)
+  run_id=$(grep -oE 'run-[0-9]{8}-[0-9]{3}' <<<"$ack" | head -1)
+  if [ -n "$run_id" ] \
+     && cli status "$run_id" 2>&1 | grep -q '"state": "queued"' \
+     && cli list 2>&1 | grep -q "$run_id" \
+     && cli cancel "$run_id" 2>&1 | grep -q "cancelled $run_id" \
+     && [ -f "$STATE/runs/$run_id/runspec.json" ]; then
+    echo "  ok    submit -> status -> list -> cancel over the socket ($run_id)"
+  else
+    echo "  FAIL  bench-cli round trip"
+    sed 's/^/          /' <<<"$ack" | tail -8
+    sed 's/^/          /' "$OUT/serve.log" | tail -6
+    fails=$((fails + 1))
+  fi
+  n=$((n + 1))
+  # a refused command exits 1 on purpose; capture first (pipefail)
+  refusal=$(cli submit "/bench iterations=1" 2>&1 || true)
+  if grep -q "invocations=" <<<"$refusal"; then
+    echo "  ok    refusals travel the wire verbatim"
+  else
+    echo "  FAIL  wire refusal"
+    sed 's/^/          /' <<<"$refusal" | tail -4
+    fails=$((fails + 1))
+  fi
+  kill "$SERVE_PID" 2>/dev/null
 fi
 
 echo

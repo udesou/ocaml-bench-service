@@ -64,6 +64,27 @@ let offline_variant entry =
        labelled `%s` must be the same commit or they are not comparable."
       entry entry
 
+let ( let* ) = Result.bind
+
+let cli_variants ~resolve ~vs =
+  match vs with
+  | [] ->
+    err
+      "A CLI submission has no pull request to take compilers from: name them \
+       with `vs=`. The first is the baseline -- for example \
+       `vs=5.4.1,c0f8c8ceef751fb3a99652d3d52399db3d1c2aae`."
+  | baseline :: rest ->
+    let* b = resolve baseline in
+    let* cs =
+      List.fold_left
+        (fun acc e ->
+          let* acc = acc in
+          let* v = resolve e in
+          Ok (acc @ [ v ]))
+        (Ok []) rest
+    in
+    Ok (Variant.with_role Variant.Baseline b :: cs)
+
 let offline =
   {
     variants =
@@ -74,23 +95,199 @@ let offline =
             "PR-triggered runs need the server's GitHub resolution (the PR \
              head and its merge base), which is not wired up yet. Use the CLI \
              with `vs=` for now."
-        | Api.Cli -> (
-          match vs with
-          | [] ->
-            err
-              "A CLI submission has no pull request to take compilers from: \
-               name them with `vs=`. The first is the baseline -- for example \
-               `vs=5.4.1,c0f8c8ceef751fb3a99652d3d52399db3d1c2aae`."
-          | baseline :: rest ->
-            let ( let* ) = Result.bind in
-            let* b = offline_variant baseline in
-            let* cs =
-              List.fold_left
-                (fun acc e ->
-                  let* acc = acc in
-                  let* v = offline_variant e in
-                  Ok (acc @ [ v ]))
-                (Ok []) rest
+        | Api.Cli -> cli_variants ~resolve:offline_variant ~vs);
+  }
+
+(* --- the GitHub-backed resolver -------------------------------------------- *)
+
+(* The server's whole GitHub dependency, and it is only `git`: refs, release
+   tags and PR heads resolve with `ls-remote` (GitHub advertises
+   refs/pull/N/head), and the merge-base baseline is computed in a local bare
+   cache repo the resolver fetches into.  No API, no token -- public repos
+   only, which is what this service measures.
+
+   Names follow the document's example (`ocaml-pr-14796-e5f6a7b`): the label
+   says what the user meant, the sha pins it, and the runtime name -- the
+   compiler cache key -- carries both. *)
+
+type github = {
+  git : string;  (** the git binary *)
+  compiler_repo : string;  (** clone URL that `vs=` entries resolve against *)
+  url_of_repo : string -> string;
+      (** pr_context.repo ("owner/name") -> clone URL; overridable in tests *)
+  cache_dir : string;  (** bare repo used only for merge-base computation *)
+  default_base : string;  (** branch a PR targets when the bot did not say *)
+}
+
+let github_defaults ~cache_dir =
+  {
+    git = "git";
+    compiler_repo = "https://github.com/ocaml/ocaml";
+    url_of_repo = (fun repo -> "https://github.com/" ^ repo);
+    cache_dir;
+    default_base = "trunk";
+  }
+
+let run_git (g : github) args =
+  let cmd = Filename.quote_command g.git args ^ " 2>&1" in
+  let ic = Unix.open_process_in cmd in
+  let buf = Buffer.create 1024 in
+  (try
+     while true do
+       Buffer.add_channel buf ic 1
+     done
+   with End_of_file -> ());
+  let status = Unix.close_process_in ic in
+  let out = String.trim (Buffer.contents buf) in
+  match status with
+  | Unix.WEXITED 0 -> Ok out
+  | _ -> Error out
+
+(* `git ls-remote <url> <ref>`: the sha in the first column, or None when the
+   remote has no such ref.  A FAILURE (unreachable url) is distinct from an
+   absent ref. *)
+let ls_remote g ~url ~ref_ =
+  match run_git g [ "ls-remote"; url; ref_ ] with
+  | Error out ->
+    err "Could not reach `%s`: %s" url
+      (if out = "" then "git ls-remote failed" else out)
+  | Ok "" -> Ok None
+  | Ok out -> (
+    match Util.split_on ~sep:'\t' (List.hd (Util.split_on ~sep:'\n' out)) with
+    | sha :: _ when is_hex sha && String.length sha >= 40 -> Ok (Some sha)
+    | _ -> err "Unexpected ls-remote output from `%s`: %s" url out)
+
+let github_variant g entry =
+  if is_hex entry && String.length entry >= 7 then
+    Ok
+      {
+        Variant.label = "";
+        spec = Variant.Commit (String.lowercase_ascii entry);
+        role = Variant.Candidate;
+        configure_args = "";
+      }
+  else
+    let pinned sha =
+      {
+        Variant.label = entry;
+        spec = Variant.Commit sha;
+        role = Variant.Candidate;
+        configure_args = "";
+      }
+    in
+    if looks_like_version entry then
+      (* the peeled ref (^{}) is the tagged commit; annotated tags need it *)
+      let* peeled =
+        ls_remote g ~url:g.compiler_repo ~ref_:("refs/tags/" ^ entry ^ "^{}")
+      in
+      let* sha =
+        match peeled with
+        | Some sha -> Ok (Some sha)
+        | None -> ls_remote g ~url:g.compiler_repo ~ref_:("refs/tags/" ^ entry)
+      in
+      match sha with
+      | Some sha -> Ok (pinned sha)
+      | None ->
+        err "`%s` is not a release tag of %s." entry g.compiler_repo
+    else
+      let* sha =
+        ls_remote g ~url:g.compiler_repo ~ref_:("refs/heads/" ^ entry)
+      in
+      match sha with
+      | Some sha -> Ok (pinned sha)
+      | None ->
+        err
+          "`%s` is neither a release tag, a branch of %s, nor a commit sha."
+          entry g.compiler_repo
+
+let ensure_cache g =
+  if Sys.file_exists (Filename.concat g.cache_dir "HEAD") then Ok ()
+  else
+    match run_git g [ "init"; "--quiet"; "--bare"; g.cache_dir ] with
+    | Ok _ -> Ok ()
+    | Error out -> err "Could not create the git cache at %s: %s" g.cache_dir out
+
+(* The merge-base baseline: fetch the PR head and the base branch into the
+   cache, then ask git.  This is the one place that needs commit OBJECTS
+   rather than just ref tips. *)
+let merge_base g ~url ~number ~base_ref ~head_sha =
+  let* () = ensure_cache g in
+  let gd = "--git-dir=" ^ g.cache_dir in
+  let* _ =
+    match
+      run_git g
+        [
+          gd;
+          "fetch";
+          "--quiet";
+          url;
+          Printf.sprintf "+refs/heads/%s:refs/bench/base" base_ref;
+          Printf.sprintf "+refs/pull/%d/head:refs/bench/pr" number;
+        ]
+    with
+    | Ok _ -> Ok ""
+    | Error out -> err "Could not fetch `%s` from `%s`: %s" base_ref url out
+  in
+  match run_git g [ gd; "merge-base"; "refs/bench/base"; head_sha ] with
+  | Ok sha when is_hex sha -> Ok sha
+  | Ok out | Error out ->
+    err
+      "Could not compute the merge base of `%s` and the PR head `%s`: %s. \
+       Give an explicit baseline with `vs=`."
+      base_ref (String.sub head_sha 0 7) out
+
+let github g =
+  {
+    variants =
+      (fun ~origin ~vs ->
+        match origin.Api.kind with
+        | Api.Cli -> cli_variants ~resolve:(github_variant g) ~vs
+        | Api.Pr_comment ctx ->
+          let url = g.url_of_repo ctx.Api.repo in
+          let* head_sha =
+            match ctx.Api.head_sha with
+            | Some sha when is_hex sha && String.length sha >= 7 ->
+              Ok (String.lowercase_ascii sha)
+            | _ -> (
+              let* sha =
+                ls_remote g ~url
+                  ~ref_:(Printf.sprintf "refs/pull/%d/head" ctx.Api.number)
+              in
+              match sha with
+              | Some sha -> Ok sha
+              | None ->
+                err "`%s` does not advertise a head for PR #%d." ctx.Api.repo
+                  ctx.Api.number)
+          in
+          let head =
+            {
+              Variant.label = Printf.sprintf "pr-%d" ctx.Api.number;
+              spec = Variant.Commit head_sha;
+              role = Variant.Candidate;
+              configure_args = "";
+            }
+          in
+          if vs <> [] then
+            (* vs= chooses the baseline; the PR head stays the first candidate *)
+            let* resolved = cli_variants ~resolve:(github_variant g) ~vs in
+            match resolved with
+            | baseline :: extras -> Ok (baseline :: head :: extras)
+            | [] -> err "empty `vs=` resolution"
+          else
+            let base_ref =
+              Option.value ctx.Api.base_ref ~default:g.default_base
             in
-            Ok (Variant.with_role Variant.Baseline b :: cs)));
+            let* mb =
+              merge_base g ~url ~number:ctx.Api.number ~base_ref ~head_sha
+            in
+            Ok
+              [
+                {
+                  Variant.label = "base";
+                  spec = Variant.Commit mb;
+                  role = Variant.Baseline;
+                  configure_args = "";
+                };
+                head;
+              ]);
   }
