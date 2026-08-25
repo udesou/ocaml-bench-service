@@ -135,6 +135,37 @@ check_rejects "unsweepable"     "/bench sweep=nonsense:1"   "Cannot sweep"
 check_rejects "old spelling"    "/bench iterations=1"       "invocations="
 
 echo
+echo "bench-cli (in-process server, file-backed queue):"
+SVC="$OUT/service.json"
+cat > "$SVC" <<EOF
+{ "bot": {"account":"bot","token_env":"TOK"},
+  "results_repo":"u/r",
+  "allowlist":["tester"], "admins":["tester"],
+  "machines":[{"name":"monolith","default":true,
+               "macro_bench_dir":"$HOME/macro-benches","log_dir":"$OUT/logs"}] }
+EOF
+cli() {
+  local sub="$1"; shift
+  opam exec --switch="$SWITCH" -- dune exec --no-build bin/bench_cli.exe -- \
+    "$sub" "$@" --service-config "$SVC" --state-dir "$OUT/state" \
+    --login tester --base-config "$BASE" --vocab "$VOCAB"
+}
+n=$((n + 1))
+ack=$(cli submit "/bench tag=small invocations=1 vs=5.5.0,c0f8c8ceef751fb3a99652d3d52399db3d1c2aae" 2>&1)
+run_id=$(grep -oE 'run-[0-9]{8}-[0-9]{3}' <<<"$ack" | head -1)
+if [ -n "$run_id" ] \
+   && cli status "$run_id" 2>&1 | grep -q '"state": "queued"' \
+   && cli list 2>&1 | grep -q "$run_id" \
+   && cli cancel "$run_id" 2>&1 | grep -q "cancelled $run_id" \
+   && [ -f "$OUT/state/runs/$run_id/runspec.json" ]; then
+  echo "  ok    submit -> status -> list -> cancel ($run_id)"
+else
+  echo "  FAIL  bench-cli round trip"
+  sed 's/^/          /' <<<"$ack" | tail -8
+  fails=$((fails + 1))
+fi
+
+echo
 if [ "$fails" -eq 0 ]; then
   echo "$n live cases, all passed"
 else

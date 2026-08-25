@@ -30,3 +30,10 @@ let friendly tag =
   match List.find_opt (fun (_, t) -> t = tag) aliases with
   | Some (a, _) -> a
   | None -> tag
+
+(* The tag vocabulary in user-facing order: the documented aliases first, then
+   whatever tags the base config defines that they do not cover (the feature
+   tags: bigarrays, effects, ...).  Both spellings the grammar accepts. *)
+let vocabulary ~defined =
+  let aliased = List.map resolve documented in
+  documented @ List.filter (fun t -> not (List.mem t aliased)) defined

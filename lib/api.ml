@@ -285,6 +285,16 @@ let string_of_run_state = function
   | Timed_out -> "timed_out"
   | Cancelled -> "cancelled"
 
+let run_state_of_string = function
+  | "queued" -> Some Queued
+  | "running" -> Some Running
+  | "publishing" -> Some Publishing
+  | "done" -> Some Done
+  | "failed" -> Some Failed
+  | "timed_out" -> Some Timed_out
+  | "cancelled" -> Some Cancelled
+  | _ -> None
+
 let string_of_execution_phase = function
   | Preparing -> "preparing"
   | Provisioning -> "provisioning"
@@ -430,6 +440,69 @@ let json_of_vocab (v : vocab) =
              v.sweepable) );
       ("max_invocations", `Int v.max_invocations);
     ]
+
+(* meta round-trips: the server's queue is meta.json files (§8's index record),
+   so it must read back what it wrote.  Reading is lenient about unknown
+   fields, per the additive-versioning rule. *)
+let json_member k = function
+  | `Assoc kvs -> ( match List.assoc_opt k kvs with Some v -> v | None -> `Null)
+  | _ -> `Null
+
+let json_str = function `String s -> Some s | _ -> None
+
+let meta_of_json j =
+  let mem k = json_member k j in
+  match
+    ( json_str (mem "run_id"),
+      Option.bind (json_str (mem "state")) run_state_of_string,
+      json_str (mem "requested_by"),
+      json_str (mem "command"),
+      json_str (mem "machine"),
+      Option.bind (json_str (mem "family")) family_of_string,
+      json_str (mem "queued_at") )
+  with
+  | ( Some run_id,
+      Some state,
+      Some requested_by,
+      Some command,
+      Some machine,
+      Some family,
+      Some queued_at ) ->
+    let links_j = mem "links" in
+    Ok
+      {
+        run_id;
+        state;
+        run_key = Option.value (json_str (mem "run_key")) ~default:"";
+        pr_url = json_str (mem "pr_url");
+        requested_by;
+        command;
+        machine;
+        family;
+        queued_at;
+        finished_at = json_str (mem "finished_at");
+        summary =
+          (match json_member "improved" (mem "summary") with
+          | `Int improved ->
+            let int k =
+              match json_member k (mem "summary") with `Int i -> i | _ -> 0
+            in
+            Some
+              {
+                improved;
+                regressed = int "regressed";
+                unchanged = int "unchanged";
+                noisy = int "noisy";
+              }
+          | _ -> None);
+        links =
+          {
+            status = Option.value (json_str (json_member "status" links_j)) ~default:"";
+            webview =
+              Option.value (json_str (json_member "webview" links_j)) ~default:"";
+          };
+      }
+  | _ -> Error "meta.json is missing a required field"
 
 let json_of_meta (m : meta) =
   `Assoc

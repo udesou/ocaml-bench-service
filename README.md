@@ -10,11 +10,13 @@ It is the request-and-scheduling layer around three existing pieces: the
 [ocaml-bench-dashboard](https://github.com/udesou/ocaml-bench-dashboard) data
 contract and viewer. It deliberately reimplements none of them.
 
-> **Status: nothing is measured yet.** What works today is the front half — a
-> `/bench` comment becomes a complete, validated description of a run, and
-> `lib/api.ml` fixes the Request API (the one interface every requester speaks)
-> that the server will implement. Executing a run on a machine is the next
-> piece of work. See [Roadmap](#roadmap).
+> **Status: nothing is measured yet.** What works today is the front half,
+> end to end: `bench-cli submit "/bench …"` goes through a real Request API
+> server (`lib/server.ml`, in-process for now) — allowlist and roles, grammar,
+> validation, cost cap — and lands as a run-spec directory in a file-backed
+> queue, with `status`/`list`/`cancel` working against it. Nothing drains that
+> queue yet: the bench agent (API B) is the next piece of work. See
+> [Roadmap](#roadmap).
 
 ## What works today
 
@@ -47,6 +49,35 @@ The run spec is documented in [docs/RUNSPEC.md](docs/RUNSPEC.md); read that befo
 writing anything that consumes it. `--format json` prints it instead of the
 config, and `--check` additionally pushes the generated config through
 running-ng's own `validate()` and `validate_tags()`.
+
+## The server and its client
+
+`bench-cli` is the thin client of the Request API — it parses nothing and
+renders nothing, it sends the raw command and prints whatever markdown comes
+back. The server it talks to (`lib/server.ml`) is instantiated **in the same
+process** for now; a wire transport wraps the same module later without
+changing either side.
+
+```sh
+bench-cli submit "/bench tag=small invocations=1 vs=5.5.0,c0f8c8ce…" \
+  --service-config service.json --state-dir ~/bench-queue
+bench-cli status run-20260825-001
+bench-cli list --mine
+bench-cli cancel run-20260825-001
+bench-cli help                # the /bench reference, served by the server
+```
+
+Every accepted run becomes a directory under `<state-dir>/runs/<run_id>/` —
+`meta.json` (the index record), `request.json` (who asked, when, verbatim),
+`runspec.json` and the generated config. That directory *is* the queue row;
+the future bench agent claims work by draining it. Submissions are
+deduplicated by `(origin id, normalized command)` against active runs, users
+are capped to a few active runs, and machines can be drained by admins.
+
+What the server deliberately does **not** do yet: talk to GitHub (so `vs=`
+takes versions and commit shas; refs like `trunk` and PR-comment submissions
+are refused with instructions), compute run keys (so no result reuse), or
+execute anything.
 
 A config file alone would not be enough, which is the main reason a "run spec"
 exists at all: the benchmark selection travels as the `RUNNING_TAG` *environment
@@ -179,6 +210,8 @@ paths, not a transport.
 | path | contents |
 |---|---|
 | `lib/api.ml` | the Request API: the §5 types and module signature every requester speaks |
+| `lib/server.ml` | the request server: API A over a file-backed queue |
+| `lib/resolver.ml` | user input → pinned runtimes; offline rules now, GitHub later |
 | `lib/request.ml` | the comment grammar |
 | `lib/gen.ml` | request + suite definitions → a running-ng config |
 | `lib/runspec.ml` | the run spec, specified in `docs/RUNSPEC.md` |
@@ -186,22 +219,24 @@ paths, not a transport.
 | `lib/cost.ml` | the estimate and the budget limit |
 | `lib/authz.ml`, `lib/service_config.ml` | allowlist, roles, bot identity, machine registry |
 | `lib/bridge.ml`, `scripts/rng_helper.py` | the only path to running-ng's own logic |
-| `bin/main.ml` | the `bench-gen` command line |
+| `bin/bench_cli.ml` | `bench-cli`, the thin API A client |
+| `bin/main.ml` | the `bench-gen` command line (a developer tool) |
 | `test/`, `scripts/live_check.sh` | table tests and the live check |
 
 ## Roadmap
 
 1. ~~Turn a `/bench` comment into a validated run spec.~~ **Done.**
-2. ~~Fix the Request API: types, roles, vocabulary (`lib/api.ml`).~~ **Done** —
-   the server behind it is step 4.
-3. **Run it.** An agent on the bench machine that *dials out* to claim work
-   (the server never connects to a machine): check out the pinned sources,
-   provision or reuse compiler switches, run under a timeout in its own process
-   group, and upload artifacts — on failure as well as success.
-4. **Queue it.** The request server implementing `Api.REQUEST_API`: a durable
-   queue with one run at a time per machine, leases so a restart cannot lose an
-   hour of work, result reuse by run key (`lib/run_key.ml`), and honest queue
-   positions and ETAs.
+2. ~~Fix the Request API: types, roles, vocabulary (`lib/api.ml`).~~ **Done.**
+3. ~~Queue it: a server implementing `Api.REQUEST_API` behind a file-backed
+   queue, with a thin CLI client.~~ **Done** — in-process and offline; still
+   to come here: the wire transport (capnp), GitHub resolution
+   (refs → shas, PR head + merge base), and result reuse by run key
+   (`lib/run_key.ml`).
+4. **Run it.** An agent on the bench machine that *dials out* to claim work
+   from the queue (the server never connects to a machine): check out the
+   pinned sources, provision or reuse compiler switches, run under a timeout
+   in its own process group, and upload artifacts — on failure as well as
+   success. Leases so a restart cannot lose an hour of work.
 5. **Trigger it.** A GitHub workflow on `issue_comment`, an immediate
    acknowledgement, and a summary comment when the run finishes.
 6. **Show it.** Results published as data-contract artifacts and rendered by the

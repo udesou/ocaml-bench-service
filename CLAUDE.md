@@ -46,6 +46,15 @@ document is required reading.
   document defines are transcribed verbatim; types it references without
   defining are marked PROVISIONAL in place. A change starts in the document,
   not here.
+- `lib/server.ml` — the request server: `Api.REQUEST_API` over the existing
+  pipeline, with a **file-backed queue** (`<state>/runs/<run_id>/` holding
+  meta.json + request.json + runspec.json + config.yml; that directory IS the
+  queue row a future agent claims). In-process, offline, nothing executes —
+  the module's header states the exact scope. The transport wraps this module;
+  do not fork a second submit path.
+- `lib/resolver.ml` — user input → pinned runtimes. `Resolver.offline` passes
+  versions and shas and refuses refs/PR origins with instructions; the
+  GitHub-backed resolver replaces the record without touching the server.
 - `lib/request.ml` — the comment grammar. Pure: no network, no knowledge of
   which tags exist, no cost decision, no roles (admin-only keys parse for
   everyone and are refused in Authz). Rejection messages are the product (they
@@ -91,6 +100,19 @@ document is required reading.
   stays pure and role-free; `Authz.vet_request` refuses `force=true` and
   `priority=` for non-admins with a Forbidden envelope. Do not push role checks
   into `Request.parse`.
+- **The server never trusts the caller's `auth.role`.** The transport proves
+  the LOGIN; the ROLE is re-derived from service.json's `admins` on every call
+  (`Server.effective_auth`). A client self-declaring Admin gets what the
+  config says.
+- **Idempotency is checked against ACTIVE runs only.** `(origin id, normalized
+  command)` deduplicates redeliveries while a run is queued/running; a repeat
+  of a *completed* run is the run key's job (§8.1), which nothing computes yet.
+  Widening the duplicate check to finished runs would make rerunning a command
+  impossible.
+- **`submit` has no outcome arm for `/bench help` / `/bench cancel`** — a gap
+  raised on the architecture document. Until decided, the server answers help
+  through the error envelope (its text is postable verbatim, which is what a
+  bot does with it) and points cancel at the cancel operation.
 - **`comparisons:` in a running-ng config is `label`/`a`/`b` (+ `mode`), NOT the
   contract's `kind`/`over`/`baseline`/`variants`.** `contract/native.py::
   _map_comparisons` translates a/b → contract comparisons on emission. Emitting

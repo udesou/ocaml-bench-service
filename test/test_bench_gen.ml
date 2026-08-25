@@ -102,12 +102,17 @@ let ctx ?(program_count = 20) ?(cap_seconds = Cost.default_cap_seconds) () =
     cap_seconds;
   }
 
+(* Generation refusals are API A error envelopes; parse refusals are plain
+   strings until the server wraps them.  For the table tests both collapse to
+   the postable markdown. *)
 let gen ?program_count ?cap_seconds ?(variants = [ base_v; head_v ]) comment =
   match Request.parse comment with
-  | Error e -> Error e
+  | Error e -> Error { Api.code = Api.Bad_command; error_markdown = e }
   | Ok request ->
     Gen.generate ~ctx:(ctx ?program_count ?cap_seconds ()) ~request ~facts
       ~sweepable ~variants
+
+let markdown (e : Api.error) = e.Api.error_markdown
 
 (* --- 1. parsing ---------------------------------------------------------- *)
 
@@ -252,14 +257,14 @@ comparisons:
 
 let test_golden () =
   match gen "/bench" with
-  | Error e -> fail "golden: generation failed: %s" e
+  | Error e -> fail "golden: generation failed: %s" (markdown e)
   | Ok spec ->
     check_eq ~name:"golden default config" ~expected:golden_default
       ~actual:spec.config_yaml
 
 let test_shape_rules () =
   (match gen "/bench" with
-  | Error e -> fail "shape: %s" e
+  | Error e -> fail "shape: %s" (markdown e)
   | Ok spec ->
     (* comparisons use running-ng's a/b form, not the contract's kind/over. *)
     check_contains ~name:"comparison uses a:" ~needle:"    a: ocaml-base-5.5.0"
@@ -289,7 +294,7 @@ let test_shape_rules () =
       (List.assoc_opt "RUNNING_REUSE_SWITCHES" spec.env = Some "1"));
   (* A sweep must define its modifier: s/o/M/m are absent from macro_base. *)
   match gen "/bench invocations=1 sweep=o:80,120" with
-  | Error e -> fail "sweep: %s" e
+  | Error e -> fail "sweep: %s" (markdown e)
   | Ok spec ->
     check_contains ~name:"sweep defines the modifier"
       ~needle:"modifiers:\n  o:\n    type: OCamlRunParam\n    val: \"o={0}\""
@@ -303,7 +308,7 @@ let test_shape_rules () =
    comma-separated RUNNING_TAG it already parses. *)
 let test_multi_tag () =
   match gen "/bench tag=small,large invocations=1" with
-  | Error e -> fail "multi-tag: %s" e
+  | Error e -> fail "multi-tag: %s" (markdown e)
   | Ok spec ->
     check_true ~name:"RUNNING_TAG carries the comma-separated union"
       (List.assoc_opt "RUNNING_TAG" spec.env = Some "small_run,large_run");
@@ -353,7 +358,7 @@ let facts_variant ~uses_ocamlrunparam ~lavyek_enabled =
 
 let gen_with ~facts comment =
   match Request.parse comment with
-  | Error e -> Error e
+  | Error e -> Error { Api.code = Api.Bad_command; error_markdown = e }
   | Ok request ->
     Gen.generate ~ctx:(ctx ()) ~request ~facts ~sweepable
       ~variants:[ base_v; head_v ]
@@ -365,7 +370,7 @@ let test_modifier_chain () =
        ~facts:(facts_variant ~uses_ocamlrunparam:false ~lavyek_enabled:false)
        "/bench"
    with
-  | Error e -> fail "pre-#15 chain: %s" e
+  | Error e -> fail "pre-#15 chain: %s" (markdown e)
   | Ok spec ->
     check_contains ~name:"pre-#15 emits re/md" ~needle:"|perf_grp1|re-25|md-2\""
       spec.config_yaml;
@@ -378,7 +383,7 @@ let test_modifier_chain () =
       ~facts:(facts_variant ~uses_ocamlrunparam:true ~lavyek_enabled:true)
       "/bench"
   with
-  | Error e -> fail "lavyek chain: %s" e
+  | Error e -> fail "lavyek chain: %s" (markdown e)
   | Ok spec ->
     check_contains ~name:"lavyek enabled adds the parallel triple"
       ~needle:"|perf_grp1|re_par-22|md_par-8|pin_lavyek\"" spec.config_yaml;
@@ -390,7 +395,7 @@ let test_modifier_chain () =
    the sign of every delta and makes an improvement look like a regression. *)
 let test_baseline_direction () =
   (match gen "/bench" with
-  | Error e -> fail "baseline direction: %s" e
+  | Error e -> fail "baseline direction: %s" (markdown e)
   | Ok spec ->
     check_contains ~name:"merge base is a:" ~needle:"    a: ocaml-base-5.5.0"
       spec.config_yaml;
@@ -406,7 +411,7 @@ let test_baseline_direction () =
         ]
       "/bench"
   with
-  | Error e -> fail "baseline direction (swapped): %s" e
+  | Error e -> fail "baseline direction (swapped): %s" (markdown e)
   | Ok spec ->
     check_contains ~name:"role swap moves a:"
       ~needle:"    a: ocaml-pr-1234-c0f8c8c" spec.config_yaml;
@@ -415,7 +420,7 @@ let test_baseline_direction () =
 
 let test_single_runtime () =
   match gen ~variants:[ head_v ] "/bench" with
-  | Error e -> fail "single runtime: %s" e
+  | Error e -> fail "single runtime: %s" (markdown e)
   | Ok spec ->
     (* validate() rejects a runtime in configs that no comparison references,
        so a lone runtime must emit no comparisons block at all. *)
@@ -440,12 +445,15 @@ let test_gen_rejects () =
       match gen comment with
       | Ok _ -> fail "generate %S should have been rejected" comment
       | Error e ->
-        check_contains ~name:(Printf.sprintf "gen reject %S" comment) ~needle e)
+        check_contains
+          ~name:(Printf.sprintf "gen reject %S" comment)
+          ~needle (markdown e))
     gen_rejects;
   (* Duplicate runtime names would silently share one opam switch. *)
   match gen ~variants:[ base_v; { base_v with role = Variant.Candidate } ] "/bench" with
   | Ok _ -> fail "duplicate runtime names should have been rejected"
-  | Error e -> check_contains ~name:"duplicate runtimes" ~needle:"same name" e
+  | Error e ->
+    check_contains ~name:"duplicate runtimes" ~needle:"same name" (markdown e)
 
 let test_variant_naming () =
   (* The runtime name is the compiler cache key, so it must carry the sha. *)
@@ -489,13 +497,18 @@ let test_cost () =
   (match gen ~program_count:92 "/bench tag=all" with
   | Ok _ -> fail "tag=all should exceed the cap"
   | Error e ->
-    check_contains ~name:"cap refusal names the estimate" ~needle:"4h36m" e;
-    check_contains ~name:"cap refusal says what to shrink" ~needle:"invocations=" e;
-    check_contains ~name:"cap refusal says force is admin-only" ~needle:"admin" e);
+    check_true ~name:"cap refusal carries the over_budget code"
+      (e.Api.code = Api.Over_budget);
+    check_contains ~name:"cap refusal names the estimate" ~needle:"4h36m"
+      (markdown e);
+    check_contains ~name:"cap refusal says what to shrink" ~needle:"invocations="
+      (markdown e);
+    check_contains ~name:"cap refusal says force is admin-only" ~needle:"admin"
+      (markdown e));
   (* force=true overrides, and says so.  (Whether the ASKER may say force= is
      Authz's decision, tested below; generation only honours it.) *)
   match gen ~program_count:92 "/bench tag=all force=true" with
-  | Error e -> fail "force=true should be accepted: %s" e
+  | Error e -> fail "force=true should be accepted: %s" (markdown e)
   | Ok spec ->
     check_true ~name:"forced run warns"
       (List.exists (contains ~needle:"force=true") spec.warnings)
@@ -505,7 +518,7 @@ let service_config =
     Service_config.of_string
       {|{ "bot": {"account":"bot-acct","token_env":"TOK"},
           "results_repo":"u/r",
-          "allowlist":["Udesou"],
+          "allowlist":["Udesou","watcher"],
           "admins":["Admin-Person"],
           "allow_associations":[],
           "machines":[{"name":"monolith","default":true,
@@ -585,7 +598,7 @@ let jint j = match j with `Int i -> Some i | _ -> None
 
 let test_runspec () =
   match gen "/bench tag=small invocations=1" with
-  | Error e -> fail "runspec: generation failed: %s" e
+  | Error e -> fail "runspec: generation failed: %s" (markdown e)
   | Ok spec ->
     let sources =
       [
@@ -772,6 +785,199 @@ let test_api_json () =
   check_eq_opt ~name:"outcomes are tagged" ~expected:(Some "duplicate")
     ~actual:(jstr (member "outcome" j))
 
+(* --- 6. the request server (lib/server.ml) -------------------------------- *)
+
+(* The server over injected deps: fixture facts, a fake tag filter, the
+   offline resolver, and a throwaway state directory.  No bridge, no network,
+   no machine -- exactly what the in-process design is for. *)
+let test_server () =
+  let state_dir =
+    Filename.concat
+      (Filename.get_temp_dir_name ())
+      (Printf.sprintf "bench-server-test-%d-%d" (Unix.getpid ())
+         (int_of_float (Unix.gettimeofday () *. 1000.) mod 100000))
+  in
+  let deps =
+    {
+      Server.service = service_config;
+      facts;
+      sweepable;
+      base_include = "/base/macro_base.yml";
+      program_count = (fun ~tags:_ -> Ok 20);
+      resolver = Resolver.offline;
+      sources =
+        [
+          Runspec.source ~name:"running-ng" ~dir:"/rng"
+            ~git_ref:"origin/adding-ocaml-support" ();
+          Runspec.source ~name:"macro-benches" ~dir:"/mb"
+            ~git_ref:"origin/master" ();
+        ];
+      state_dir;
+      base_url = "http://bench.test";
+      max_active_per_user = 2;
+    }
+  in
+  let user = { Api.login = "udesou"; role = Api.User } in
+  let watcher = { Api.login = "watcher"; role = Api.User } in
+  (* Claims are not trusted: the server re-derives roles from its config, so
+     this User claim comes back Admin, and the stranger's Admin claim buys
+     nothing. *)
+  let admin = { Api.login = "admin-person"; role = Api.User } in
+  let stranger = { Api.login = "someone-else"; role = Api.Admin } in
+  let submit ?(origin = "cli:udesou") auth cmd =
+    Server.submit deps auth
+      { Api.command = cmd; origin = { Api.kind = Api.Cli; id = origin } }
+  in
+  let vs = "vs=5.5.0,c0f8c8ceef751fb3a99652d3d52399db3d1c2aae" in
+
+  (match submit stranger ("/bench " ^ vs) with
+  | Error e ->
+    check_true ~name:"unlisted login is forbidden, even claiming admin"
+      (e.Api.code = Api.Forbidden)
+  | Ok _ -> fail "a stranger's submit should be refused");
+
+  (match submit user ("/bench tag=small invocations=1 " ^ vs) with
+  | Error e -> fail "server submit: %s" (markdown e)
+  | Ok (Api.Accepted a) ->
+    check_true ~name:"accepted run ids are run-*"
+      (Util.starts_with ~prefix:"run-" a.Api.run_id);
+    check_contains ~name:"ack names the run" ~needle:a.Api.run_id
+      a.Api.ack_markdown;
+    check_true ~name:"resolved echoes the baseline"
+      (a.Api.resolved.Api.baseline.Api.name = "ocaml-5.5.0");
+    check_true ~name:"first run is queue position 1" (a.Api.queue_position = 1);
+    let dir =
+      Filename.concat (Filename.concat state_dir "runs") a.Api.run_id
+    in
+    check_true ~name:"the queue row is a directory of records"
+      (List.for_all
+         (fun f -> Sys.file_exists (Filename.concat dir f))
+         [ "runspec.json"; "meta.json"; "request.json"; "config.yml" ]);
+    (match Server.status deps user ~run_id:a.Api.run_id with
+    | Ok st -> check_true ~name:"a fresh run is queued" (st.Api.state = Api.Queued)
+    | Error e -> fail "status: %s" (markdown e));
+    (* Idempotency: same origin id + same normalized command while active. *)
+    (match submit user ("/bench  tag=small   invocations=1 " ^ vs) with
+    | Ok (Api.Duplicate d) ->
+      check_true ~name:"redelivery lands on the existing run"
+        (d.run_id = a.Api.run_id)
+    | _ -> fail "resubmission should be a Duplicate");
+    (match Server.cancel deps watcher ~run_id:a.Api.run_id with
+    | Error e ->
+      check_true ~name:"non-owner cancel is forbidden"
+        (e.Api.code = Api.Forbidden)
+    | Ok () -> fail "watcher cancelled someone else's run");
+    (match Server.cancel deps user ~run_id:a.Api.run_id with
+    | Ok () -> (
+      match Server.status deps user ~run_id:a.Api.run_id with
+      | Ok st ->
+        check_true ~name:"owner cancel lands" (st.Api.state = Api.Cancelled)
+      | Error e -> fail "status after cancel: %s" (markdown e))
+    | Error e -> fail "owner cancel: %s" (markdown e))
+  | Ok _ -> fail "expected Accepted");
+
+  (* The per-user active cap (Q10): two active runs, the third refused. *)
+  (match
+     ( submit ~origin:"cli:a" user ("/bench tag=small " ^ vs),
+       submit ~origin:"cli:b" user ("/bench tag=large " ^ vs) )
+   with
+  | Ok (Api.Accepted _), Ok (Api.Accepted _) -> (
+    match submit ~origin:"cli:c" user ("/bench tag=legacy " ^ vs) with
+    | Error e ->
+      check_true ~name:"third active run hits user_queue_full"
+        (e.Api.code = Api.User_queue_full)
+    | _ -> fail "third active run should be refused")
+  | _ -> fail "two distinct runs should be accepted");
+
+  (* Admin-only keys through the whole pipe. *)
+  (match submit ~origin:"cli:e" user ("/bench force=true " ^ vs) with
+  | Error e ->
+    check_true ~name:"server refuses force for users"
+      (e.Api.code = Api.Forbidden)
+  | Ok _ -> fail "user force should be refused");
+  (match submit ~origin:"cli:f" admin ("/bench force=true " ^ vs) with
+  | Ok (Api.Accepted _) -> check_true ~name:"server allows force for admins" true
+  | Error e -> fail "admin force: %s" (markdown e)
+  | Ok _ -> fail "admin force should be Accepted");
+
+  (* Offline resolution limits, stated rather than guessed. *)
+  (match submit ~origin:"cli:g" admin "/bench vs=trunk" with
+  | Error e ->
+    check_contains ~name:"refs are refused offline" ~needle:"commit sha"
+      (markdown e)
+  | Ok _ -> fail "vs=trunk should be refused offline");
+  let pr_origin =
+    {
+      Api.kind =
+        Api.Pr_comment
+          {
+            Api.repo = "ocaml/ocaml";
+            number = 1;
+            url = "https://github.com/ocaml/ocaml/pull/1";
+            comment_id = "c1";
+            comment_url = "https://github.com/ocaml/ocaml/pull/1#c1";
+            head_sha = None;
+          };
+      id = "c1";
+    }
+  in
+  (match
+     Server.submit deps user { Api.command = "/bench " ^ vs; origin = pr_origin }
+   with
+  | Error e ->
+    check_contains ~name:"PR submissions wait for the GitHub resolver"
+      ~needle:"GitHub" (markdown e)
+  | Ok _ -> fail "PR-origin submit should be refused offline");
+
+  (* Machines: unknown, drained, admin-gated listing. *)
+  (match submit ~origin:"cli:h" admin ("/bench machine=nope " ^ vs) with
+  | Error e ->
+    check_true ~name:"unknown machine has its own code"
+      (e.Api.code = Api.Unknown_machine)
+  | Ok _ -> fail "machine=nope should be refused");
+  (match Server.machines deps user with
+  | Error e ->
+    check_true ~name:"machines listing is admin-only"
+      (e.Api.code = Api.Forbidden)
+  | Ok _ -> fail "user should not list machines");
+  (match Server.drain deps admin ~machine:"monolith" with
+  | Ok () -> (
+    (match submit ~origin:"cli:i" admin ("/bench " ^ vs) with
+    | Error e ->
+      check_true ~name:"drained machine refuses new runs"
+        (e.Api.code = Api.Machine_drained)
+    | Ok _ -> fail "drained machine should refuse");
+    match Server.undrain deps admin ~machine:"monolith" with
+    | Ok () -> (
+      match Server.machines deps admin with
+      | Ok [ m ] ->
+        check_true ~name:"undrain restores the machine" (not m.Api.drained)
+      | _ -> fail "machines should list exactly monolith")
+    | Error e -> fail "undrain: %s" (markdown e))
+  | Error e -> fail "drain: %s" (markdown e));
+
+  (* /bench help through submit: postable text, wherever it travels (a raised
+     gap: submit_outcome has no arm for it yet). *)
+  (match submit ~origin:"cli:j" user "/bench help" with
+  | Error e ->
+    check_contains ~name:"submit answers /bench help with the reference"
+      ~needle:"`/bench` usage" (markdown e)
+  | Ok _ -> fail "/bench help should answer with the reference");
+
+  (* The index: newest first, filterable. *)
+  match
+    Server.list deps user
+      { Api.no_filter with Api.requester = Some "udesou" }
+      { Api.limit = 50; after = None }
+  with
+  | Ok metas ->
+    check_true ~name:"list filters by requester"
+      (metas <> []
+      && List.for_all
+           (fun (m : Api.meta) -> m.Api.requested_by = "udesou")
+           metas)
+  | Error e -> fail "list: %s" (markdown e)
+
 let test_help () =
   let h =
     Help.render ~facts ~sweepable ~machines:[ "monolith" ] ~cap_seconds:7200.
@@ -808,6 +1014,7 @@ let () =
   test_api_json ();
   test_authz ();
   test_admin_keys ();
+  test_server ();
   test_help ();
   ok "done";
   Printf.printf "\n%d checks, %d failures\n" !checks !failures;

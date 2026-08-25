@@ -281,13 +281,7 @@ let cmd_vocab o =
     | None -> [ Option.value o.machine ~default:"local" ]
     | Some c -> Service_config.machine_names c
   in
-  (* The documented aliases first, then the raw tags they do not cover (the
-     feature tags: bigarrays, effects, ...), so both accepted spellings show. *)
-  let aliased = List.map Tag_alias.resolve Tag_alias.documented in
-  let tags =
-    Tag_alias.documented
-    @ List.filter (fun t -> not (List.mem t aliased)) (Facts.tag_names facts)
-  in
+  let tags = Tag_alias.vocabulary ~defined:(Facts.tag_names facts) in
   let vocab =
     {
       Api.machines;
@@ -350,7 +344,7 @@ let cmd_spec o =
       List.iter
         (fun (requested, tag) ->
           match Gen.check_tag facts ~requested tag with
-          | Error e -> print_endline e; exit 1
+          | Error e -> print_endline e.Api.error_markdown; exit 1
           | Ok () -> ())
         (Request.tag_pairs request);
       (* Program count from running-ng's own tag filter (union across tags,
@@ -386,7 +380,7 @@ let cmd_spec o =
         }
       in
       match Gen.generate ~ctx ~request ~facts ~sweepable ~variants:o.variants with
-      | Error e -> print_endline e; exit 1
+      | Error e -> print_endline e.Api.error_markdown; exit 1
       | Ok spec ->
         Util.write_file config_path spec.config_yaml;
         (* The run spec is always written, whatever --format prints: it is the

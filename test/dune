@@ -1,5 +1,5 @@
 (test
  (name test_bench_gen)
- (libraries bench_service yojson)
+ (libraries bench_service yojson unix)
  (deps
   (glob_files fixtures/*)))

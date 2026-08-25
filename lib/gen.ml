@@ -106,7 +106,11 @@ let modifier_chain (facts : Facts.t) =
   in
   sequential @ parallel
 
-let err fmt = Printf.ksprintf (fun s -> Error s) fmt
+(* Every refusal is an API A error envelope: the message is postable verbatim,
+   the code is for requester logic.  Everything here is a bad command except
+   the cost cap, which gets its own code so a client can tell "fix the
+   spelling" from "shrink the request". *)
+let err fmt = Api.error Api.Bad_command fmt
 let ( let* ) = Result.bind
 
 (* --- YAML emission ------------------------------------------------------- *)
@@ -125,10 +129,16 @@ let flow_list items = "[" ^ String.concat ", " items ^ "]"
 (* --- validation ---------------------------------------------------------- *)
 
 let check_variants variants =
-  let* () = if variants = [] then Error "no runtimes to measure" else Ok () in
+  let* () = if variants = [] then err "no runtimes to measure" else Ok () in
   let* () =
     List.fold_left
-      (fun acc v -> match acc with Error _ -> acc | Ok () -> Variant.validate v)
+      (fun acc v ->
+        match acc with
+        | Error _ -> acc
+        | Ok () -> (
+          match Variant.validate v with
+          | Ok () -> Ok ()
+          | Error e -> err "%s" e))
       (Ok ()) variants
   in
   let names = List.map Variant.runtime_name variants in
@@ -235,7 +245,11 @@ let generate ~ctx ~(request : Request.t) ~(facts : Facts.t) ~sweepable ~variants
   in
   let* () =
     if Cost.over_cap ~cap_seconds:ctx.cap_seconds cost && not request.force then
-      Error (Cost.refusal ~cap_seconds:ctx.cap_seconds cost)
+      Error
+        {
+          Api.code = Api.Over_budget;
+          error_markdown = Cost.refusal ~cap_seconds:ctx.cap_seconds cost;
+        }
     else Ok ()
   in
 
