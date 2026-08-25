@@ -117,13 +117,14 @@ check_rejects() {
 
 echo
 echo "generate + validate():"
-check        "bare /bench"           "/bench"
-check        "tag=small"             "/bench tag=small"
-check        "tag=large iterations=1" "/bench tag=large iterations=1"
-check        "tag=legacy"            "/bench tag=legacy iterations=1"
-check        "sweep s and o"         "/bench iterations=1 sweep=s:262144,524288;o:80,120 force=true"
-check        "tag=all forced"        "/bench tag=all iterations=1 force=true"
-check_single "single runtime"        "/bench iterations=1"
+check        "bare /bench"            "/bench"
+check        "tag=small"              "/bench tag=small"
+check        "tag=large invocations=1" "/bench tag=large invocations=1"
+check        "tag=legacy"             "/bench tag=legacy invocations=1"
+check        "tag union"              "/bench tag=small,legacy invocations=1"
+check        "sweep s and o"          "/bench invocations=1 sweep=s:262144,524288;o:80,120 force=true"
+check        "tag=all forced"         "/bench tag=all invocations=1 force=true"
+check_single "single runtime"         "/bench invocations=1"
 
 echo
 echo "refusals:"
@@ -131,6 +132,7 @@ check_rejects "unknown tag"     "/bench tag=nosuchtag"      "Unknown benchmark s
 check_rejects "coverage gap"    "/bench tag=ephemerons"     "coverage gap"
 check_rejects "over the cap"    "/bench tag=all"            "over the"
 check_rejects "unsweepable"     "/bench sweep=nonsense:1"   "Cannot sweep"
+check_rejects "old spelling"    "/bench iterations=1"       "invocations="
 
 echo
 if [ "$fails" -eq 0 ]; then

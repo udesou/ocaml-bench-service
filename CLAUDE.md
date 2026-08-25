@@ -41,8 +41,14 @@ document is required reading.
 
 ## Where things live
 
+- `lib/api.ml` — **the Request API (API A)**: the types and module signature
+  every requester (PR bot, CLI, future web form) speaks. Types the architecture
+  document defines are transcribed verbatim; types it references without
+  defining are marked PROVISIONAL in place. A change starts in the document,
+  not here.
 - `lib/request.ml` — the comment grammar. Pure: no network, no knowledge of
-  which tags exist, no cost decision. Rejection messages are the product (they
+  which tags exist, no cost decision, no roles (admin-only keys parse for
+  everyone and are refused in Authz). Rejection messages are the product (they
   get posted to PRs verbatim), so they are asserted on in tests.
 - `lib/tag_alias.ml` — `small` → `small_run` etc. Unaliased names fall through,
   keeping feature tags (`bigarrays`, `effects`, …) reachable but undocumented.
@@ -57,12 +63,18 @@ document is required reading.
 - `lib/cost.ml` — the estimate and the 2 h cap. Calibrated at 30 s per
   cell-iteration; replace with historical per-program timings when we have them.
 - `lib/gen.ml` — the generator. Emits config + env + cost + warnings.
-- `lib/service_config.ml` / `lib/authz.ml` — bot identity, allowlist, machine
-  registry.
+- `lib/service_config.ml` / `lib/authz.ml` — bot identity, allowlist + admins
+  (roles), machine registry (no ssh: the agent dials out, the server never
+  connects to a machine). `Authz.vet_request` is where `force=`/`priority=`
+  are refused for non-admins.
 - `lib/help.ml` — `/bench help`, generated from facts + vocab.
-- `lib/runspec.ml` — the generator → runner interface, specified in
+- `lib/run_key.ml` — the content identity of a measurement, for result reuse.
+  Computed by the server at submission; bench-gen emits `run_key: null` because
+  it resolves no refs and knows no machine fingerprint.
+- `lib/runspec.ml` — the generator → agent interface, specified in
   `docs/RUNSPEC.md`. **Change both together.** Self-contained (config inline, not
-  by path), pins running-ng *and* macro-benches by ref, carries no credentials.
+  by path), pins running-ng *and* macro-benches by ref, carries no credentials
+  and no transport (v2 removed `ssh`).
 - `lib/bridge.ml` — the only caller of python.
 - `scripts/rng_helper.py` — `facts` | `validate` | `tagfilter`.
 - `test/` — table tests against `test/fixtures/` snapshots.
@@ -71,6 +83,14 @@ document is required reading.
 
 ## Gotchas (hard-won — don't rediscover)
 
+- **The user-facing repetition key is `invocations=`, never `iterations`.**
+  It maps 1:1 onto running-ng's `invocations:` (fresh-process repetitions).
+  The old spelling is a special-cased rejection that points at the new key —
+  not a "did you mean" (three edits away, the suggester will not fire).
+- **Admin-only keys parse for everyone and are refused in Authz.** The grammar
+  stays pure and role-free; `Authz.vet_request` refuses `force=true` and
+  `priority=` for non-admins with a Forbidden envelope. Do not push role checks
+  into `Request.parse`.
 - **`comparisons:` in a running-ng config is `label`/`a`/`b` (+ `mode`), NOT the
   contract's `kind`/`over`/`baseline`/`variants`.** `contract/native.py::
   _map_comparisons` translates a/b → contract comparisons on emission. Emitting
@@ -98,7 +118,12 @@ document is required reading.
   **3**, not 1, so the value is always emitted explicitly.
 - **`tag=` is not a config field.** It becomes `RUNNING_TAG`, consumed by
   `apply_tag_filter()`. This is why the deliverable is a run spec and not a YAML
-  file — a config alone does not describe the run.
+  file — a config alone does not describe the run. Several tags are allowed
+  (`tag=small,large`) and mean their **union**: that is apply_tag_filter's own
+  comma-separated semantics, don't reimplement or second-guess it.
+- **`/bench cancel` requires an explicit run id** (from the run's
+  acknowledgement comment). "Cancel my latest" is ambiguous once two requests
+  share a PR, and a wrong guess kills an hour of someone else's work.
 - **The macro-benches commit is part of run identity.** Binaries are cached as
   `<benchmark>-<runtime>` and the runtime name encodes only the *compiler* sha, so
   changing benchmark source does not invalidate a cached binary. `sources` in the

@@ -11,8 +11,10 @@ It is the request-and-scheduling layer around three existing pieces: the
 contract and viewer. It deliberately reimplements none of them.
 
 > **Status: nothing is measured yet.** What works today is the front half — a
-> `/bench` comment becomes a complete, validated description of a run. Executing
-> that on a machine is the next piece of work. See [Roadmap](#roadmap).
+> `/bench` comment becomes a complete, validated description of a run, and
+> `lib/api.ml` fixes the Request API (the one interface every requester speaks)
+> that the server will implement. Executing a run on a machine is the next
+> piece of work. See [Roadmap](#roadmap).
 
 ## What works today
 
@@ -25,6 +27,7 @@ anything expensive starts.
 opam exec --switch=. -- dune exec bin/main.exe --
 
 bench-gen help                                    # the /bench reference, generated
+bench-gen vocab                                   # machines/families/tags/sweeps as JSON
 bench-gen parse --comment "/bench tag=small"      # a comment as JSON
 bench-gen authz --service-config service.json --login someone
 bench-gen spec  --comment "/bench" \
@@ -70,7 +73,7 @@ producing plausible, wrong numbers an hour later:
   running-ng moves where the runtime_events settings live as it evolves.
 - **Cost is estimated and capped.** One comment can ask for twenty hours on a
   machine that must run serially; a request over the limit is refused with the
-  estimate and how to shrink it.
+  estimate and how to shrink it. Only an admin can force past the cap.
 
 Rejection messages are treated as part of the product — they get posted to a pull
 request verbatim — so the test suite asserts on their exact wording.
@@ -78,21 +81,28 @@ request verbatim — so the test suite asserts on their exact wording.
 ## The `/bench` grammar
 
 ```
-/bench                      # default set, 3 iterations (~1h)
+/bench                      # default set, 3 invocations (~1h)
 /bench vs=trunk             # choose the baseline
 /bench vs=5.4.1,trunk       # compare more than two compilers
 /bench tag=small            # small | default | large | huge | legacy | all
-/bench iterations=5         # up to 10
+/bench tag=small,large      # several sets: their union
+/bench invocations=5        # fresh-process repetitions, up to 10
 /bench sweep=s:262144,524288;o:80,120
 /bench machine=<name>       # when more than one is registered
-/bench force=true           # run despite the cost limit
-/bench cancel
+/bench family=macro         # the default; micro is reserved
+/bench force=true           # run despite the cost limit (admin-only)
+/bench priority=top         # jump the queue (admin-only)
+/bench cancel <run-id>      # the id is in the run's acknowledgement
 /bench rerun                # clean slate: rebuild everything
 /bench help
 ```
 
 The baseline defaults to the PR's merge base, so a bare `/bench` answers the
 question people actually have: *does this change performance?*
+
+The repetition key is `invocations=` — each one runs every benchmark in a fresh
+process, which is what running-ng's `invocations:` means; "iterations" is not a
+word this service uses, and the old spelling gets a pointer to the new one.
 
 `/bench help` is generated at request time from the benchmark suite definitions
 and the data contract's vocabulary, so it cannot drift from what is accepted.
@@ -109,6 +119,13 @@ An explicit allowlist of GitHub logins, not GitHub's `author_association`. A run
 costs about an hour of exclusive machine time and executes compiler code from a
 pull request, so triggering one is a privilege rather than something to infer
 from repository permissions.
+
+There are two roles. **Users** (the allowlist) submit, watch, and cancel their
+own runs. **Admins** (the `admins` list) additionally operate the service; only
+they may spend other people's time with `force=true` (past the cost cap) or
+`priority=top` (front of the queue). Identity is a GitHub login everywhere —
+the bot asserts the commenter it verified; the CLI will map bearer tokens to
+logins — so the allowlist and the audit trail stay uniform.
 
 ## Build and test
 
@@ -145,23 +162,29 @@ against an unmerged change.
 
 Copy `service.example.json` to `service.json` (gitignored) and edit it. It holds
 the bot account and the *name of the environment variable* carrying its token —
-never the token itself — the trigger allowlist, and the machine registry. All
-three are configuration so that swapping the bot account, adding someone to the
-allowlist, or registering a machine is an edit rather than a deploy.
+never the token itself — the trigger allowlist, the admins, and the machine
+registry. All of it is configuration so that swapping the bot account, adding
+someone to the allowlist, or registering a machine is an edit rather than a
+deploy.
 
 A machine entry is really a *slot*: `(host, OPAMROOT, benches directory)`. One
 slot means one concurrent run, because running-ng locks the opam root — which
-also happens to be the property that keeps measurements from overlapping.
+also happens to be the property that keeps measurements from overlapping. The
+registry carries no ssh coordinates: the server never connects to a bench
+machine — the agent on the machine dials out — so a machine is a name and
+paths, not a transport.
 
 ## Repository layout
 
 | path | contents |
 |---|---|
+| `lib/api.ml` | the Request API: the §5 types and module signature every requester speaks |
 | `lib/request.ml` | the comment grammar |
 | `lib/gen.ml` | request + suite definitions → a running-ng config |
 | `lib/runspec.ml` | the run spec, specified in `docs/RUNSPEC.md` |
+| `lib/run_key.ml` | the content identity of a measurement (result reuse) |
 | `lib/cost.ml` | the estimate and the budget limit |
-| `lib/authz.ml`, `lib/service_config.ml` | allowlist, bot identity, machine registry |
+| `lib/authz.ml`, `lib/service_config.ml` | allowlist, roles, bot identity, machine registry |
 | `lib/bridge.ml`, `scripts/rng_helper.py` | the only path to running-ng's own logic |
 | `bin/main.ml` | the `bench-gen` command line |
 | `test/`, `scripts/live_check.sh` | table tests and the live check |
@@ -169,14 +192,19 @@ also happens to be the property that keeps measurements from overlapping.
 ## Roadmap
 
 1. ~~Turn a `/bench` comment into a validated run spec.~~ **Done.**
-2. **Run it.** A machine registry and an ssh runner: check out the pinned
-   sources, provision or reuse compiler switches, run under a timeout in its own
-   process group, and fetch artifacts back — on failure as well as success.
-3. **Queue it.** A durable queue with one run at a time per machine, leases so a
-   restart cannot lose an hour of work, and honest queue positions and ETAs.
-4. **Trigger it.** A GitHub workflow on `issue_comment`, an immediate
+2. ~~Fix the Request API: types, roles, vocabulary (`lib/api.ml`).~~ **Done** —
+   the server behind it is step 4.
+3. **Run it.** An agent on the bench machine that *dials out* to claim work
+   (the server never connects to a machine): check out the pinned sources,
+   provision or reuse compiler switches, run under a timeout in its own process
+   group, and upload artifacts — on failure as well as success.
+4. **Queue it.** The request server implementing `Api.REQUEST_API`: a durable
+   queue with one run at a time per machine, leases so a restart cannot lose an
+   hour of work, result reuse by run key (`lib/run_key.ml`), and honest queue
+   positions and ETAs.
+5. **Trigger it.** A GitHub workflow on `issue_comment`, an immediate
    acknowledgement, and a summary comment when the run finishes.
-5. **Show it.** Results published as data-contract artifacts and rendered by the
+6. **Show it.** Results published as data-contract artifacts and rendered by the
    dashboard, with a regression judgement that accounts for machine noise.
 
 ## Licence

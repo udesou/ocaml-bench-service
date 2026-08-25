@@ -9,7 +9,19 @@ type spec = Version of string | Commit of string
 
 type role = Baseline | Candidate
 
-type t = { label : string; spec : spec; role : role }
+type t = {
+  label : string;
+  spec : spec;
+  role : role;
+  configure_args : string;
+      (* e.g. "--enable-flambda" (§5.3 runtime_pin).  Part of the run's
+         identity and of switch provenance, but NOT of the runtime name: the
+         name encodes only the sha, and the runner's provenance record is what
+         distinguishes two builds of the same sha.  Question raised on the
+         document: no grammar key produces this yet, and how it reaches
+         running-ng's provisioning is unspecified -- so it travels in the run
+         spec and stays out of the generated config. *)
+}
 
 let sha_short sha =
   let n = String.length sha in
@@ -72,17 +84,31 @@ let describe t =
 let role_string = function Baseline -> "baseline" | Candidate -> "candidate"
 
 let of_cli_string s =
-  (* kind:label:value, e.g. version:base:5.5.0 or commit:pr-1234:a1b2c3d... *)
+  (* kind:label:value[:configure args], e.g. version:base:5.5.0 or
+     commit:pr-1234:a1b2c3d... or commit:fp:a1b2c3d:--enable-frame-pointers.
+     Everything after the third colon is the configure args, verbatim. *)
   match Util.split_on ~sep:':' s with
-  | [ "version"; label; v ] ->
-    Ok { label; spec = Version v; role = Candidate }
-  | [ "commit"; label; sha ] ->
-    Ok { label; spec = Commit sha; role = Candidate }
+  | "version" :: label :: v :: args ->
+    Ok
+      {
+        label;
+        spec = Version v;
+        role = Candidate;
+        configure_args = String.concat ":" args;
+      }
+  | "commit" :: label :: sha :: args ->
+    Ok
+      {
+        label;
+        spec = Commit sha;
+        role = Candidate;
+        configure_args = String.concat ":" args;
+      }
   | _ ->
     Error
       (Printf.sprintf
          "cannot parse variant %S; expected `version:<label>:<v>` or \
-          `commit:<label>:<sha>`"
+          `commit:<label>:<sha>` (optionally `:<configure args>`)"
          s)
 
 let with_role role t = { t with role }

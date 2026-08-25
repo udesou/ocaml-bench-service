@@ -3,11 +3,14 @@
      parse   a /bench comment                    -> JSON (no side effects)
      spec    a /bench comment + pinned variants  -> run spec (+ optional --check)
      help    render /bench help from live facts
-     authz   test the trigger allowlist
+     vocab   the API A vocabulary (machines, families, tags, sweepable) as JSON
+     authz   test the trigger allowlist and roles
 
    Ref resolution (trunk -> sha) is deliberately absent: it belongs to the
    server, needs the network, and would make this untestable.  `spec` therefore
-   takes variants already pinned to a version or a sha. *)
+   takes variants already pinned to a version or a sha -- which is also why the
+   run specs it writes carry `run_key: null`: the §8.1 key hashes resolved shas
+   and the machine's environment fingerprint, and only the server has both. *)
 
 open Bench_service
 
@@ -84,16 +87,18 @@ let usage () =
   print_string
     {|bench-gen -- generate a running-ng run spec from a /bench comment
 
-  bench-gen parse --comment "/bench iterations=3"
+  bench-gen parse --comment "/bench invocations=3"
   bench-gen help  [--service-config service.json]
+  bench-gen vocab [--service-config service.json]
   bench-gen authz --service-config service.json --login someone
   bench-gen spec  --comment "/bench" \
                   --variant version:base:5.5.0 \
                   --variant commit:pr-1234:c0f8c8ceef751fb3a99652d3d52399db3d1c2aae \
                   [--baseline base] [--out DIR] [--check]
 
-Variants are `version:<label>:<v>` or `commit:<label>:<sha>`; the first is the
-baseline unless --baseline names another label.
+Variants are `version:<label>:<v>` or `commit:<label>:<sha>`, optionally with a
+fourth `:<configure args>` part; the first is the baseline unless --baseline
+names another label.
 
 `spec` always writes <request_id>.yml and <request_id>.runspec.json into --out;
 --format json prints the run spec instead of the config. See docs/RUNSPEC.md.
@@ -194,7 +199,6 @@ let load_sweepable o =
    from flags otherwise, so the CLI stays usable before a config exists. *)
 type placement = {
   p_machine : string;
-  p_ssh : string;
   p_macro_bench_dir : string;
   p_log_dir : string;
   p_opamroot : string option;
@@ -207,7 +211,6 @@ let resolve_placement o svc =
   | None ->
     {
       p_machine = Option.value o.machine ~default:"local";
-      p_ssh = "localhost";
       p_macro_bench_dir = o.macro_bench_dir;
       p_log_dir = o.log_dir;
       p_opamroot = o.opamroot;
@@ -220,7 +223,6 @@ let resolve_placement o svc =
     | Ok m ->
       {
         p_machine = m.name;
-        p_ssh = m.ssh;
         p_macro_bench_dir = m.macro_bench_dir;
         p_log_dir = m.log_dir;
         p_opamroot =
@@ -258,13 +260,48 @@ let cmd_authz o =
   | Some c ->
     let login = match o.login with Some l -> l | None -> die "authz needs --login" in
     let d = Authz.check c ~login ~association:o.association in
-    if Authz.allowed d then
-      Printf.printf "ALLOWED (%s); bot account %s, token from $%s\n"
-        (Authz.message d) c.bot.account c.bot.token_env
-    else begin
+    (match Authz.auth d with
+    | Some auth ->
+      Printf.printf "ALLOWED (%s), role %s; bot account %s, token from $%s\n"
+        (Authz.message d)
+        (Api.string_of_role auth.Api.role)
+        c.bot.account c.bot.token_env
+    | None ->
       print_endline (Authz.message d);
-      exit 1
-    end
+      exit 1)
+
+(* The §5.2 vocabulary: what a requester may say.  The PR bot and the CLI read
+   this instead of hardcoding tags or machines. *)
+let cmd_vocab o =
+  let svc = load_service o in
+  let facts = load_facts o in
+  let sweepable = load_sweepable o in
+  let machines =
+    match svc with
+    | None -> [ Option.value o.machine ~default:"local" ]
+    | Some c -> Service_config.machine_names c
+  in
+  (* The documented aliases first, then the raw tags they do not cover (the
+     feature tags: bigarrays, effects, ...), so both accepted spellings show. *)
+  let aliased = List.map Tag_alias.resolve Tag_alias.documented in
+  let tags =
+    Tag_alias.documented
+    @ List.filter (fun t -> not (List.mem t aliased)) (Facts.tag_names facts)
+  in
+  let vocab =
+    {
+      Api.machines;
+      families = [ Api.Macro ];
+      tags;
+      sweepable =
+        List.map
+          (fun (d : Vocab.dim) ->
+            { Api.param = d.modifier; dimension = d.dimension; unit_ = d.unit_ })
+          sweepable;
+      max_invocations = Request.max_invocations;
+    }
+  in
+  print_endline (Yojson.Safe.pretty_to_string (Api.json_of_vocab vocab))
 
 let cmd_spec o =
   match Request.parse o.comment with
@@ -272,22 +309,30 @@ let cmd_spec o =
   | Ok request -> (
     match request.action with
     | Request.Help -> cmd_help o
-    | Request.Cancel -> print_endline "action: cancel (no config generated)"
+    | Request.Cancel id ->
+      Printf.printf "action: cancel %s (no config generated)\n" id
     | Request.Run | Request.Rerun -> (
       if o.variants = [] then
         die
           "no --variant given: `spec` needs runtimes already resolved to a \
            version or a sha";
       let svc = load_service o in
-      (* The allowlist is checked before any work happens when we know who
-         asked; the CLI can omit --login for local testing. *)
+      (* The allowlist and the admin-only keys (force=, priority=) are checked
+         before any work happens when we know who asked; the CLI can omit
+         --login for local testing, which skips both. *)
       (match (svc, o.login) with
-      | Some c, Some login ->
+      | Some c, Some login -> (
         let d = Authz.check c ~login ~association:o.association in
-        if not (Authz.allowed d) then begin
+        match Authz.auth d with
+        | None ->
           print_endline (Authz.message d);
           exit 1
-        end
+        | Some auth -> (
+          match Authz.vet_request auth request with
+          | Ok () -> ()
+          | Error e ->
+            print_endline e.Api.error_markdown;
+            exit 1))
       | _ -> ());
       (* `machine=` in the comment wins over the flag: the flag is an operator
          default, the comment is what the user asked for. *)
@@ -299,18 +344,21 @@ let cmd_spec o =
       let pl = resolve_placement o svc in
       let facts = load_facts o in
       let sweepable = load_sweepable o in
-      let tag = Request.resolved_tag request in
-      (* Check the tag before asking the bridge to filter on it: running-ng's
+      (* Check the tags before asking the bridge to filter on them: running-ng's
          own message lists raw tag names and cannot suggest an alias, so ours is
          the better one to show a user. *)
-      (match Gen.check_tag facts ~requested:(Request.requested_tag request) tag with
-      | Error e -> print_endline e; exit 1
-      | Ok () -> ());
-      (* Program count from running-ng's own intersection-only tag filter, not
-         from our approximation of it. *)
+      List.iter
+        (fun (requested, tag) ->
+          match Gen.check_tag facts ~requested tag with
+          | Error e -> print_endline e; exit 1
+          | Ok () -> ())
+        (Request.tag_pairs request);
+      (* Program count from running-ng's own tag filter (union across tags,
+         intersection with enabled benchmarks), not our approximation of it. *)
       let program_count =
         match
-          Bridge.tagfilter (bridge_of o) ~config:o.base_config ~tags:[ tag ]
+          Bridge.tagfilter (bridge_of o) ~config:o.base_config
+            ~tags:(Request.resolved_tags request)
         with
         | Ok n -> n
         | Error errs ->
@@ -359,9 +407,13 @@ let cmd_spec o =
         let runspec_path =
           Filename.concat out_dir (o.request_id ^ ".runspec.json")
         in
+        (* run_key: null on purpose.  The §8.1 key hashes resolved shas, tool
+           versions and the machine's environment fingerprint; bench-gen has
+           none of those, and a partial key would be a wrong one.  The server
+           computes it at submission (lib/run_key.ml). *)
         let runspec_json =
           Runspec.to_string ~ctx ~request ~spec ~variants:o.variants ~sources
-            ~ssh:pl.p_ssh ~slot
+            ~run_key:None ~slot
         in
         Util.write_file runspec_path runspec_json;
         if o.format = "json" then print_string runspec_json
@@ -394,6 +446,7 @@ let () =
     | "parse" -> cmd_parse o
     | "spec" -> cmd_spec o
     | "help" -> cmd_help o
+    | "vocab" -> cmd_vocab o
     | "authz" -> cmd_authz o
     | "-h" | "--help" -> usage ()
     | other -> die "unknown command %s (try --help)" other)

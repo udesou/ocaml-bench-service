@@ -1,17 +1,17 @@
 (* The run spec: the complete, serialised description of one benchmark run.
 
-   The interface between request generation and the runner.  The server produces
-   it; the runner consumes it; a copy is archived next to the results as the
-   request's provenance record.  docs/RUNSPEC.md is the normative description --
-   keep the two in step.
+   The interface between request generation and the execution side.  The server
+   produces it; the agent on the bench machine consumes it; a copy is archived
+   next to the results as the run's provenance record.  docs/RUNSPEC.md is the
+   normative description -- keep the two in step.
 
    Three properties are deliberate:
 
    * **Self-contained.** The generated config travels inline, not as a path. A
-     spec can be archived, replayed, or diffed on its own, and the runner does
+     spec can be archived, replayed, or diffed on its own, and the agent does
      not need a shared filesystem with the server.
    * **Explicit about sources.** running-ng and macro-benches are pinned by ref,
-     and the runner records the commit it actually checked out. The
+     and the agent records the commit it actually checked out. The
      macro-benches commit has to be part of the run's identity: a change to
      benchmark source does NOT invalidate a cached binary (binaries are keyed
      `<benchmark>-<runtime>`, and the runtime name encodes only the compiler
@@ -19,16 +19,27 @@
      new compiler.
    * **No credentials, ever.** The bench machine executes PR compiler code and is
      treated as compromisable. The spec carries paths and refs, never tokens, and
-     the runner returns results rather than publishing them. *)
+     the agent uploads results rather than publishing them.
 
-let version = "1"
+   Version 2 aligns the spec with the decided parts of the architecture
+   document (§14.1): no ssh coordinates anywhere -- the agent dials out and the
+   server never connects to a machine (Q1); the repetition count is
+   `invocations` (Q17); `family` names the benchmark collection so micro can be
+   added without a breaking change (§5.3); `run_key` carries the §8.1 content
+   identity (Q16) -- null when the producer cannot compute it, as bench-gen
+   cannot: it resolves no refs and knows no machine fingerprint.  The compilers
+   are `baseline` (exactly one, by construction) and `candidates`, matching the
+   §5.3 `resolved` payload, because which side is the baseline decides the sign
+   of every delta. *)
+
+let version = "2"
 
 type source = {
   name : string;
   dir : string;  (** checkout on the bench machine *)
   git_ref : string;
   commit : string option;
-      (** null from the server; the runner fills in what it checked out *)
+      (** null from the server; the agent fills in what it checked out *)
 }
 
 let source ?commit ~name ~dir ~git_ref () = { name; dir; git_ref; commit }
@@ -46,13 +57,14 @@ let timeout_seconds ~(cost : Cost.t) =
 let str s = `String s
 let opt_str = function None -> `Null | Some s -> `String s
 
-let json_of_variant (v : Variant.t) =
+(* The §5.3 runtime_pin, with one deviation raised on the document: a released
+   compiler (vs=5.4.1) is provisioned by running-ng's `version:` field, which a
+   commit-only pin cannot express, so the pin keeps both spellings until that
+   question is settled. *)
+let json_of_pin (v : Variant.t) =
   `Assoc
-    ([
-       ("name", str (Variant.runtime_name v));
-       ("role", str (Variant.role_string v.role));
-     ]
-    @ List.map (fun (k, value) -> (k, str value)) (Variant.yaml_fields v))
+    ((("name", str (Variant.runtime_name v)) :: List.map (fun (k, value) -> (k, str value)) (Variant.yaml_fields v))
+    @ [ ("configure_args", str v.configure_args) ])
 
 let json_of_source s =
   `Assoc
@@ -70,25 +82,39 @@ let action_string (r : Request.t) =
   match r.action with
   | Request.Run -> "run"
   | Request.Rerun -> "rerun"
-  | Request.Cancel -> "cancel"
+  | Request.Cancel _ -> "cancel"
   | Request.Help -> "help"
 
-(* The command the runner executes.  `run_ocaml_bench_gc_sweep.sh` is
+(* The command the agent executes.  `run_ocaml_bench_gc_sweep.sh` is
    running-ng's build+run entry point; it finds or creates the tools switch,
    builds and verifies olly, puts both on PATH, then calls `python3 -m running
    runbms`.  Invoking runbms directly would skip that setup. *)
 let entry_script = "run_ocaml_bench_gc_sweep.sh"
 
 let to_json ~(ctx : Gen.context) ~(request : Request.t) ~(spec : Gen.t)
-    ~variants ~sources ~ssh ~slot =
+    ~variants ~sources ~run_key ~slot =
   let cost = spec.cost in
+  let baseline =
+    match
+      List.find_opt (fun v -> v.Variant.role = Variant.Baseline) variants
+    with
+    | Some v -> v
+    | None -> List.hd variants
+  in
+  let candidates =
+    List.filter
+      (fun v -> Variant.runtime_name v <> Variant.runtime_name baseline)
+      variants
+  in
   `Assoc
     [
-      ("runspec_version", str version);
+      ("spec_version", str version);
+      ("run_id", str ctx.request_id);
+      ("run_key", opt_str run_key);
+      ("family", str (Api.string_of_family request.family));
       ( "request",
         `Assoc
           [
-            ("id", str ctx.request_id);
             ("action", str (action_string request));
             ("command", str (Util.trim request.raw));
             ("requested_by", opt_str ctx.requested_by);
@@ -99,24 +125,30 @@ let to_json ~(ctx : Gen.context) ~(request : Request.t) ~(spec : Gen.t)
           [
             ("machine", str ctx.machine);
             ("slot", str slot);
-            ("ssh", str ssh);
             ("opamroot", opt_str ctx.opamroot);
             ("macro_bench_dir", str ctx.macro_bench_dir);
             ("log_dir", str ctx.log_dir);
           ] );
       ("sources", `List (List.map json_of_source sources));
-      ("runtimes", `List (List.map json_of_variant variants));
+      ("baseline", json_of_pin baseline);
+      ("candidates", `List (List.map json_of_pin candidates));
       ( "selection",
         `Assoc
           [
-            ("tag", str spec.tag);
-            ("tag_requested", str (Request.requested_tag request));
+            (* Several tags select their union (running-ng's comma-separated
+               RUNNING_TAG); `requested` keeps the spelling the user typed. *)
+            ( "tags",
+              `List
+                (List.map
+                   (fun (requested, name) ->
+                     `Assoc [ ("name", str name); ("requested", str requested) ])
+                   (Request.tag_pairs request)) );
             ("programs", `Int cost.programs);
           ] );
       ( "measurement",
         `Assoc
           [
-            ("iterations", `Int cost.iterations);
+            ("invocations", `Int cost.invocations);
             ("configs", `List (List.map str spec.configs));
             ("config_count", `Int cost.configs);
             ("sweeps", `Assoc (List.map json_of_sweep request.sweeps));
@@ -143,7 +175,7 @@ let to_json ~(ctx : Gen.context) ~(request : Request.t) ~(spec : Gen.t)
         `Assoc
           [
             (* running-ng names the run directory itself
-               (<host>-<timestamp>) under LOG_DIR, so the runner discovers it
+               (<host>-<timestamp>) under LOG_DIR, so the agent discovers it
                rather than being told: the server cannot predict the name. *)
             ("run_dir_parent", str ctx.log_dir);
             ( "fetch",
@@ -157,8 +189,8 @@ let to_json ~(ctx : Gen.context) ~(request : Request.t) ~(spec : Gen.t)
                      "runbms.yml";
                      "runbms_args.yml";
                    ]) );
-            (* Raw traces stay on the machine: they are large, and the results
-               repo holds the small canonical artifacts, not bulk data. *)
+            (* Raw traces stay on the machine: they are large, and the store
+               holds the small canonical artifacts, not bulk data. *)
             ("exclude", `List (List.map str [ "memtrace_*.trace" ]));
           ] );
       ( "limits",
@@ -171,7 +203,7 @@ let to_json ~(ctx : Gen.context) ~(request : Request.t) ~(spec : Gen.t)
       ("warnings", `List (List.map str spec.warnings));
     ]
 
-let to_string ~ctx ~request ~spec ~variants ~sources ~ssh ~slot =
+let to_string ~ctx ~request ~spec ~variants ~sources ~run_key ~slot =
   Yojson.Safe.pretty_to_string
-    (to_json ~ctx ~request ~spec ~variants ~sources ~ssh ~slot)
+    (to_json ~ctx ~request ~spec ~variants ~sources ~run_key ~slot)
   ^ "\n"

@@ -47,7 +47,7 @@ type t = {
   env : (string * string) list;
   runtime_names : string list;
   configs : string list;
-  tag : string;
+  tags : string list;  (* resolved; several tags select their union *)
   cost : Cost.t;
   warnings : string list;
 }
@@ -212,19 +212,26 @@ let check_perf_modifier (facts : Facts.t) =
 
 let generate ~ctx ~(request : Request.t) ~(facts : Facts.t) ~sweepable ~variants =
   let* runtime_names = check_variants variants in
-  let tag = Request.resolved_tag request in
-  let* () = check_tag facts ~requested:(Request.requested_tag request) tag in
+  let tags = Request.resolved_tags request in
+  let* () =
+    List.fold_left
+      (fun acc (requested, tag) ->
+        match acc with
+        | Error _ -> acc
+        | Ok () -> check_tag facts ~requested tag)
+      (Ok ()) (Request.tag_pairs request)
+  in
   let* sweeps = check_sweeps sweepable request.sweeps in
   let* () = check_perf_modifier facts in
 
-  let iterations = Request.iterations_or_default request in
+  let invocations = Request.invocations_or_default request in
   let sweep_points =
     List.fold_left (fun acc (_, vs) -> acc * List.length vs) 1 sweeps
   in
   let configs_count = List.length variants * sweep_points in
   let cost =
     Cost.estimate ~cell_seconds:ctx.cell_seconds ~programs:ctx.program_count
-      ~configs:configs_count ~iterations ()
+      ~configs:configs_count ~invocations ()
   in
   let* () =
     if Cost.over_cap ~cap_seconds:ctx.cap_seconds cost && not request.force then
@@ -321,7 +328,9 @@ let generate ~ctx ~(request : Request.t) ~(facts : Facts.t) ~sweepable ~variants
   (match ctx.pr_url with Some u -> line "pull request: %s" u | None -> ());
   (match ctx.requested_by with Some u -> line "requested by: %s" u | None -> ());
   line "machine:      %s" ctx.machine;
-  line "benchmarks:   %s (%d programs)" (Tag_alias.friendly tag) ctx.program_count;
+  line "benchmarks:   %s (%d programs)"
+    (String.concat ", " (List.map Tag_alias.friendly tags))
+    ctx.program_count;
   line "estimate:     %s" (Cost.explain cost);
   line "";
   line "Runtimes:";
@@ -338,7 +347,7 @@ let generate ~ctx ~(request : Request.t) ~(facts : Facts.t) ~sweepable ~variants
   Buffer.add_string b (Printf.sprintf "  - %s\n\n" (quote ctx.base_include));
 
   Buffer.add_string b "overrides:\n";
-  Buffer.add_string b (Printf.sprintf "  invocations: %d\n\n" iterations);
+  Buffer.add_string b (Printf.sprintf "  invocations: %d\n\n" invocations);
 
   banner b "Runtimes";
   Buffer.add_string b "runtimes:\n";
@@ -411,7 +420,8 @@ let generate ~ctx ~(request : Request.t) ~(facts : Facts.t) ~sweepable ~variants
          rebuild costs 10-20 min per runtime.  Correctness comes from the
          runner's switch-provenance check, not from rebuilding blindly. *)
       ("RUNNING_REUSE_SWITCHES", "1");
-      ("RUNNING_TAG", tag);
+      (* Comma-separated: apply_tag_filter unions the named tags. *)
+      ("RUNNING_TAG", String.concat "," tags);
     ]
     @ match ctx.opamroot with Some r -> [ ("OPAMROOT", r) ] | None -> []
   in
@@ -421,7 +431,7 @@ let generate ~ctx ~(request : Request.t) ~(facts : Facts.t) ~sweepable ~variants
       env;
       runtime_names;
       configs;
-      tag;
+      tags;
       cost;
       warnings = !warnings;
     }

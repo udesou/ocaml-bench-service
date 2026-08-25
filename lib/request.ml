@@ -8,37 +8,55 @@
    attached, and the benchmark set is chosen with `tag=`.  Adding them back later
    is additive -- taking them away once people use them would not be.
 
-   This module resolves nothing: no refs to shas (no network), no idea which
-   tags exist (that is Facts), no cost decision (that is Cost).  Keeping it pure
-   is what makes it table-testable. *)
+   Vocabulary (Q17): the repetition key is `invocations=` -- how many times each
+   (benchmark, config) cell is run, each in a fresh process, mapping 1:1 onto
+   running-ng's `invocations:`.  "iterations" is not a word this service uses,
+   and the old spelling gets a pointer, not a guess.
 
-type action = Run | Cancel | Rerun | Help
+   This module resolves nothing: no refs to shas (no network), no idea which
+   tags exist (that is Facts), no cost decision (that is Cost), no idea who is
+   asking (roles are Authz's: `force=` and `priority=` parse here for everyone
+   and are refused for non-admins there).  Keeping it pure is what makes it
+   table-testable. *)
+
+type action =
+  | Run
+  | Cancel of string  (* the run id to cancel, from the acknowledgement *)
+  | Rerun
+  | Help
 
 type sweep = { dimension : string; values : string list }
+
+type priority = Top
 
 type t = {
   action : action;
   machine : string option;
-  iterations : int option;
-  tag : string option;
+  invocations : int option;
+  tags : string list;  (* [] = the default set; several names are a UNION,
+                          matching running-ng's apply_tag_filter *)
   vs : string list;
   sweeps : sweep list;
-  force : bool;
+  family : Api.family;
+  priority : priority option;  (* admin-only; enforced in Authz *)
+  force : bool;  (* admin-only; enforced in Authz *)
   warnings : string list;
   raw : string;
 }
 
-let known_keys = [ "machine"; "iterations"; "tag"; "vs"; "sweep"; "force" ]
+let known_keys =
+  [ "machine"; "invocations"; "tag"; "vs"; "sweep"; "force"; "family"; "priority" ]
+
 let known_actions = [ "cancel"; "rerun"; "help" ]
 
-(* Three iterations of the 20 `default_run` programs on two runtimes is ~1 h on
+(* Three invocations of the 20 `default_run` programs on two runtimes is ~1 h on
    the calibration machine -- enough repetition to see past noise, and inside
    the 2 h cost cap. *)
-let default_iterations = 3
+let default_invocations = 3
 
-(* A guard well below the cost cap so an obvious fat-finger (iterations=300) is
+(* A guard well below the cost cap so an obvious fat-finger (invocations=300) is
    rejected as a typo rather than as an over-budget request. *)
-let max_iterations = 10
+let max_invocations = 10
 
 (* The only measurement modifier in the prototype.  perf_grp* are
    PerfAndOllyAttach, so this is also what collects olly metrics. *)
@@ -48,10 +66,12 @@ let empty raw =
   {
     action = Run;
     machine = None;
-    iterations = None;
-    tag = None;
+    invocations = None;
+    tags = [];
     vs = [];
     sweeps = [];
+    family = Api.Macro;
+    priority = None;
     force = false;
     warnings = [];
     raw;
@@ -112,7 +132,18 @@ let parse comment =
         match Util.split_kv tok with
         | None -> (
           match String.lowercase_ascii tok with
-          | "cancel" -> go { req with action = Cancel } rest
+          (* Cancellation is by run id, which the acknowledgement comment
+             hands out: "my latest run" is ambiguous the moment two requests
+             share a PR, and a wrong guess cancels an hour of someone's work. *)
+          | "cancel" -> (
+            match rest with
+            | id :: rest' when Util.split_kv id = None ->
+              go { req with action = Cancel id } rest'
+            | _ ->
+              err
+                "`cancel` needs the id of the run to cancel -- it is in the \
+                 run's acknowledgement comment. For example `/bench cancel \
+                 run-42`.")
           | "rerun" -> go { req with action = Rerun } rest
           | "help" -> go { req with action = Help } rest
           | other ->
@@ -132,32 +163,67 @@ let parse comment =
             else
               match key with
               | "machine" -> go { req with machine = Some (Util.trim value) } rest
-              | "iterations" ->
+              | "invocations" ->
                 if not (Util.is_int value) then
-                  err "`iterations=%s` is not a positive whole number." value
+                  err "`invocations=%s` is not a positive whole number." value
                 else
                   let n = int_of_string value in
-                  if n < 1 then err "`iterations=%d` must be at least 1." n
-                  else if n > max_iterations then
+                  if n < 1 then err "`invocations=%d` must be at least 1." n
+                  else if n > max_invocations then
                     err
-                      "`iterations=%d` exceeds the limit of %d. If you really \
+                      "`invocations=%d` exceeds the limit of %d. If you really \
                        need more repetitions, say so on the PR and we will run \
                        it by hand."
-                      n max_iterations
-                  else go { req with iterations = Some n } rest
-              | "tag" ->
+                      n max_invocations
+                  else go { req with invocations = Some n } rest
+              (* The old spelling gets a pointer, not a "did you mean" guess:
+                 it is three edits from the real key, and everyone coming from
+                 the prototype will type it. *)
+              | "iterations" ->
+                err
+                  "`iterations=` is not a `/bench` key; use `invocations=%s` \
+                   -- how many times each benchmark is run, each in a fresh \
+                   process."
+                  value
+              | "tag" -> (
+                (* Several names are allowed and mean their UNION -- exactly
+                   running-ng's comma-separated RUNNING_TAG semantics. *)
                 let ts = Util.comma_list value in
-                if List.length ts > 1 then
-                  err
-                    "`tag=` takes a single name (got %d). One benchmark set per \
-                     request keeps the queue predictable."
-                    (List.length ts)
-                else go { req with tag = Some (List.hd ts) } rest
+                let dup =
+                  List.filter
+                    (fun t -> List.length (List.filter (( = ) t) ts) > 1)
+                    ts
+                in
+                match dup with
+                | d :: _ -> err "`tag=` names `%s` more than once." d
+                | [] -> go { req with tags = ts } rest)
               | "vs" -> go { req with vs = Util.comma_list value } rest
               | "sweep" -> (
                 match parse_sweep value with
                 | Error e -> Error e
                 | Ok ss -> go { req with sweeps = req.sweeps @ ss } rest)
+              | "family" -> (
+                match Api.family_of_string (String.lowercase_ascii value) with
+                | Some Api.Macro -> go { req with family = Api.Macro } rest
+                (* Reserved (§12): the field exists so micro can be added
+                   without breaking any interface, but nothing serves it yet. *)
+                | Some Api.Micro ->
+                  err
+                    "`family=micro` is reserved but not yet supported; the \
+                     macro benchmarks are the only family that runs today."
+                | None ->
+                  err "`family=%s` is not a benchmark family.%s The families \
+                       are `macro` (the default) and `micro` (reserved)."
+                    value
+                    (Util.suggest ~candidates:[ "macro"; "micro" ] value))
+              | "priority" -> (
+                match String.lowercase_ascii value with
+                | "top" -> go { req with priority = Some Top } rest
+                | v ->
+                  err
+                    "`priority=%s` is not recognised; the only priority is \
+                     `top` (admin-only: enqueue at the front of the queue)."
+                    v)
               | "force" -> (
                 match String.lowercase_ascii value with
                 | "true" | "yes" | "1" -> go { req with force = true } rest
@@ -180,38 +246,44 @@ let parse comment =
 
 (* --- accessors --- *)
 
-let iterations_or_default t =
-  match t.iterations with Some n -> n | None -> default_iterations
+let invocations_or_default t =
+  match t.invocations with Some n -> n | None -> default_invocations
 
-(* The name the user actually typed (or the default they got), for messages:
-   echoing the resolved running-ng tag back at someone who typed an alias is
+(* The names the user actually typed (or the default they got), for messages:
+   echoing the resolved running-ng tags back at someone who typed an alias is
    confusing when the two differ. *)
-let requested_tag t = match t.tag with None -> "default" | Some n -> n
+let requested_tags t = match t.tags with [] -> [ "default" ] | ts -> ts
 
-(* The running-ng tag, after alias resolution.  A bare /bench is default_run. *)
-let resolved_tag t =
-  match t.tag with
-  | None -> Tag_alias.resolve "default"
-  | Some name -> Tag_alias.resolve name
+(* The running-ng tags, after alias resolution.  A bare /bench is default_run. *)
+let resolved_tags t = List.map Tag_alias.resolve (requested_tags t)
+
+(* (requested, resolved) pairs, for validation and for the run spec. *)
+let tag_pairs t =
+  List.map (fun name -> (name, Tag_alias.resolve name)) (requested_tags t)
 
 let to_json t =
   let s x = `String x in
   let action =
     match t.action with
     | Run -> "run"
-    | Cancel -> "cancel"
+    | Cancel _ -> "cancel"
     | Rerun -> "rerun"
     | Help -> "help"
   in
   `Assoc
     [
       ("action", s action);
+      ( "cancel_run_id",
+        match t.action with Cancel id -> s id | _ -> `Null );
       ("machine", match t.machine with None -> `Null | Some m -> s m);
-      ("iterations", `Int (iterations_or_default t));
-      ("iterations_explicit", `Bool (t.iterations <> None));
-      ("tag", s (resolved_tag t));
-      ("tag_requested", match t.tag with None -> `Null | Some x -> s x);
+      ("invocations", `Int (invocations_or_default t));
+      ("invocations_explicit", `Bool (t.invocations <> None));
+      ("tags", `List (List.map s (resolved_tags t)));
+      ( "tags_requested",
+        match t.tags with [] -> `Null | ts -> `List (List.map s ts) );
       ("vs", `List (List.map s t.vs));
+      ("family", s (Api.string_of_family t.family));
+      ("priority", match t.priority with None -> `Null | Some Top -> s "top");
       ( "sweeps",
         `List
           (List.map

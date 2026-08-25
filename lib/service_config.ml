@@ -8,16 +8,20 @@
      variable so rotating it never touches a source file.
    * The **allowlist** must be extendable without a deploy: a maintainer edits
      this file and the next request sees it.
+   * The **admins** are the allowlist's privileged subset (§5.4): they may use
+     `force=true` and `priority=top`, cancel anyone's run, and operate machines.
+     An admin need not appear in `allowlist` too.
    * The **machine registry** is how machines are added and removed.  An entry is
      really a *slot*: (host, OPAMROOT, benches dir).  One slot means one
      concurrent run, because running-ng locks the opam root -- which is also the
-     property that keeps two measurements from overlapping on one machine. *)
+     property that keeps two measurements from overlapping on one machine.
+     No ssh coordinates: the server never connects to a bench machine (Q1, the
+     agent dials out), so the registry holds names and paths, not transports. *)
 
 type bot = { account : string; token_env : string }
 
 type machine = {
   name : string;
-  ssh : string;
   opamroot : string option;
   macro_bench_dir : string;
   log_dir : string;
@@ -29,6 +33,7 @@ type t = {
   bot : bot;
   results_repo : string;
   allowlist : string list;
+  admins : string list;
   allow_associations : string list;
   machines : machine list;
   cap_seconds : float;
@@ -61,13 +66,11 @@ let ( let* ) = Result.bind
 
 let machine_of_json j =
   let* name = str (member "name" j) in
-  let* ssh = str ~default:"localhost" (member "ssh" j) in
   let* macro_bench_dir = str (member "macro_bench_dir" j) in
   let* log_dir = str (member "log_dir" j) in
   Ok
     {
       name;
-      ssh;
       opamroot = string_opt (member "opamroot" j);
       macro_bench_dir;
       log_dir;
@@ -93,17 +96,23 @@ let of_json j =
   in
   if machines = [] then Error "`machines` is empty -- nothing could ever run"
   else
-    let allowlist = List.map String.lowercase_ascii (strings (member "allowlist" j)) in
-    if allowlist = [] && strings (member "allow_associations" j) = [] then
+    let logins k = List.map String.lowercase_ascii (strings (member k j)) in
+    let allowlist = logins "allowlist" in
+    let admins = logins "admins" in
+    if
+      allowlist = [] && admins = []
+      && strings (member "allow_associations" j) = []
+    then
       Error
-        "`allowlist` is empty and no `allow_associations` are set: nobody could \
-         trigger a run. Add at least one login."
+        "`allowlist` and `admins` are empty and no `allow_associations` are \
+         set: nobody could trigger a run. Add at least one login."
     else
       Ok
         {
           bot = { account; token_env };
           results_repo;
           allowlist;
+          admins;
           allow_associations = strings (member "allow_associations" j);
           machines;
           cap_seconds = float_or Cost.default_cap_seconds (member "cap_seconds" j);

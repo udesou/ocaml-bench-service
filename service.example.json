@@ -8,13 +8,19 @@
     "              real one by editing this file.",
     "bot.token_env the environment variable holding its token. The token itself",
     "              is never in this file, and never on a bench machine.",
-    "allowlist     who may trigger a run. A run costs ~1h of exclusive machine",
-    "              time and executes PR compiler code, so this is a privilege.",
-    "              Extend it by editing this file -- no deploy needed.",
+    "allowlist     who may trigger a run (role: user). A run costs ~1h of",
+    "              exclusive machine time and executes PR compiler code, so",
+    "              this is a privilege. Extend it by editing this file -- no",
+    "              deploy needed.",
+    "admins        the privileged subset: may use force=true and priority=top,",
+    "              cancel anyone's run, and operate machines. An admin does not",
+    "              also need to be in allowlist.",
     "allow_associations  escape hatch, e.g. [\"OWNER\"]. Empty by default:",
     "              explicit logins beat inferred permissions.",
     "machines      the slot registry. One entry = one concurrent run, because",
-    "              the opam root lock is what serialises runs."
+    "              the opam root lock is what serialises runs. No ssh entries:",
+    "              the server never connects to a bench machine (the agent",
+    "              dials out), so a machine is names and paths, not a transport."
   ],
 
   "bot": {
@@ -25,6 +31,7 @@
   "results_repo": "udesou/ocaml-bench-results",
 
   "allowlist": ["udesou"],
+  "admins": ["udesou"],
   "allow_associations": [],
 
   "cap_seconds": 7200,
@@ -34,7 +41,6 @@
     {
       "name": "monolith",
       "default": true,
-      "ssh": "localhost",
       "opamroot": null,
       "macro_bench_dir": "/home/udesou/macro-benches",
       "log_dir": "/home/udesou/bench-runs",
