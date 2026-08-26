@@ -64,12 +64,40 @@ type error_code =
   | Unknown_machine
   | Machine_drained
   | Not_found
+  | Internal
+      (** the SERVICE failed, not the request: the markdown stays generic
+          and carries a short id that indexes the detail in the server log *)
 
 type error = { code : error_code; error_markdown : string }
 (* [error_markdown] is ALWAYS safe to post to a PR verbatim. *)
 
 let error code fmt =
   Printf.ksprintf (fun error_markdown -> Error { code; error_markdown }) fmt
+
+(* An internal failure: the DETAIL (tool output, tracebacks) goes to stderr --
+   the daemon's log -- under a short id; the postable message carries only the
+   id, so an operator can grep the log for exactly this incident. *)
+let internal ~detail fmt =
+  let id =
+    "i-"
+    ^ String.sub
+        (Digest.to_hex
+           (Digest.string (detail ^ string_of_float (Unix.gettimeofday ()))))
+        0 6
+  in
+  Printf.eprintf "[internal %s] %s\n%!" id detail;
+  Printf.ksprintf
+    (fun msg ->
+      Error
+        {
+          code = Internal;
+          error_markdown =
+            Printf.sprintf
+              "%s This is a service fault, not a problem with your request; \
+               an admin can find the details in the server log under `%s`."
+              msg id;
+        })
+    fmt
 
 (* --- payload types (§5.3) ------------------------------------------------- *)
 
@@ -283,6 +311,7 @@ let string_of_error_code = function
   | Unknown_machine -> "unknown_machine"
   | Machine_drained -> "machine_drained"
   | Not_found -> "not_found"
+  | Internal -> "internal"
 
 let string_of_run_state = function
   | Queued -> "queued"
@@ -336,6 +365,7 @@ let error_code_of_string = function
   | "unknown_machine" -> Some Unknown_machine
   | "machine_drained" -> Some Machine_drained
   | "not_found" -> Some Not_found
+  | "internal" -> Some Internal
   | _ -> None
 
 (* origin round-trips: it is built by a requester and decoded by the transport

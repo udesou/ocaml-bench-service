@@ -72,7 +72,17 @@ while :; do
         --cap "$CAP" --as-login "$author" \
         --pr-repo "$REPO" --pr-number "$number" --pr-url "$pr_url" \
         --comment-id "$id" --comment-url "$comment_url" \
-        --head-sha "$head_sha" --base-ref "$base_ref" 2>&1) || true
+        --head-sha "$head_sha" --base-ref "$base_ref" 2>&1)
+    rc=$?
+    # bench-cli's exit codes are the contract: 0 = outcome, 1 = a refusal
+    # (both postable), >=2 = the wire or the client failed -- infrastructure
+    # noise is logged here and the comment is retried next poll, NOT posted
+    # to the PR and NOT marked seen.
+    if [ "$rc" -ge 2 ]; then
+      echo "bot: cannot serve comment $id right now (bench-cli exit $rc); will retry"
+      printf '%s\n' "$reply" | sed 's/^/bot:   /'
+      continue
+    fi
     reply=$(printf '%s\n' "$reply" | grep -v '^Connecting to ')
     [ -n "$reply" ] || reply="The server returned nothing; check bench-serve's log."
     if gh api "repos/$REPO/issues/$number/comments" -f body="$reply" >/dev/null; then

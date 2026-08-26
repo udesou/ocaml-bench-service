@@ -761,6 +761,20 @@ let test_api_json () =
       ~actual:(jstr (member "error_markdown" j)));
   check_eq ~name:"states use the wire spelling" ~expected:"timed_out"
     ~actual:(Api.string_of_run_state Api.Timed_out);
+  check_true ~name:"the internal code round-trips"
+    (Api.error_code_of_string (Api.string_of_error_code Api.Internal)
+    = Some Api.Internal);
+  (* Internal errors: the detail goes to the log, the user gets a generic
+     message carrying only the greppable incident id. *)
+  (match Api.internal ~detail:"secret-traceback" "The service failed." with
+  | Error e ->
+    check_true ~name:"internal failures carry the Internal code"
+      (e.Api.code = Api.Internal);
+    check_contains ~name:"internal message names the incident id" ~needle:"i-"
+      e.Api.error_markdown;
+    check_true ~name:"the detail never reaches the user"
+      (not (contains ~needle:"secret-traceback" e.Api.error_markdown))
+  | Ok _ -> fail "Api.internal should construct an Error");
   let vocab =
     {
       Api.machines = [ "monolith" ];
@@ -1104,6 +1118,26 @@ let test_server () =
     | Ok _ -> fail "/bench cancel should be Answered"
     | Error e -> fail "comment-cancel: %s" (markdown e))
   | _ -> fail "watcher's run should be accepted");
+
+  (* A bridge failure is the SERVICE's fault: Internal code, raw tool output
+     kept out of the postable message. *)
+  let d_fail =
+    {
+      deps with
+      Server.program_count = (fun ~tags:_ -> Error "boom-traceback");
+      state_dir = state_dir ^ "-fail";
+    }
+  in
+  (match
+     Server.submit d_fail admin
+       { Api.command = "/bench tag=small " ^ vs;
+         origin = { Api.kind = Api.Cli; id = "cli:z" } }
+   with
+  | Error e ->
+    check_true ~name:"bridge failures are Internal" (e.Api.code = Api.Internal);
+    check_true ~name:"tool output stays in the log"
+      (not (contains ~needle:"boom-traceback" e.Api.error_markdown))
+  | Ok _ -> fail "a failing bridge should refuse the submit");
 
   (* The index: newest first, filterable. *)
   match

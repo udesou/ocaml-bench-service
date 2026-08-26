@@ -145,6 +145,9 @@ let origin o =
   | None, _, _ ->
     die "--pr-* flags are bot mode; they need --as-login (and bot.cap)"
 
+(* Exit codes are the bot's contract: 0 = outcome printed, 1 = the server
+   REFUSED (postable markdown on stdout), 2 = CLI usage error, 3 = could not
+   reach the server at all -- the caller should log and retry, never post. *)
 let with_cap o f =
   let cap_file =
     match o.cap with
@@ -157,7 +160,13 @@ let with_cap o f =
   let vat = Capnp_rpc_unix.client_only_vat ~sw (Eio.Stdenv.net env) in
   match Capnp_rpc_unix.Cap_file.load vat cap_file with
   | Error (`Msg m) -> die "cannot load capability %s: %s" cap_file m
-  | Ok sr -> Capnp_rpc_unix.with_cap_exn sr f
+  | Ok sr -> (
+    match Capnp_rpc_unix.with_cap_exn sr f with
+    | v -> v
+    | exception ex ->
+      Printf.eprintf "cannot reach the server behind %s: %s\n" cap_file
+        (Printexc.to_string ex);
+      exit 3)
 
 let member k = function
   | `Assoc kvs -> ( match List.assoc_opt k kvs with Some v -> v | None -> `Null)

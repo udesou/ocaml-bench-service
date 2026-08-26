@@ -27,16 +27,21 @@ let fail_api (e : Api.error) =
 
 let bad fmt = Printf.ksprintf (fun s -> { Api.code = Api.Bad_command; error_markdown = s }) fmt
 
-(* The envelope back out of a capnp error.  A reason that is not our JSON
-   (a transport-level failure, a cancelled call) still surfaces as a postable
-   message. *)
+(* A failure of the WIRE, not of the command: transport errors and cancelled
+   calls come back as Internal so a requester (the bot, above all) can tell
+   "post this refusal" from "log this and retry". *)
+let transport fmt =
+  Printf.ksprintf (fun s -> { Api.code = Api.Internal; error_markdown = s }) fmt
+
+(* The envelope back out of a capnp error.  A reason that is not our JSON is
+   a transport-level failure, and still surfaces as a postable message. *)
 let error_of_rpc (`Capnp (e : Capnp_rpc.Error.t)) : Api.error =
   match e with
-  | `Cancelled -> bad "The call was cancelled before the server answered."
+  | `Cancelled -> transport "The call was cancelled before the server answered."
   | `Exception ex -> (
     let reason = ex.Capnp_rpc.Exception.reason in
     match Yojson.Safe.from_string reason with
-    | exception _ -> bad "%s" reason
+    | exception _ -> transport "Could not talk to the server: %s" reason
     | j -> (
       let mem k = function
         | `Assoc kvs -> (
@@ -48,7 +53,7 @@ let error_of_rpc (`Capnp (e : Capnp_rpc.Error.t)) : Api.error =
         match Api.error_code_of_string c with
         | Some code -> { Api.code; error_markdown = m }
         | None -> bad "%s" m)
-      | _ -> bad "%s" reason))
+      | _ -> transport "Could not talk to the server: %s" reason))
 
 let origin_of_wire s =
   match Yojson.Safe.from_string s with

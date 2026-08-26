@@ -144,18 +144,28 @@ let run_git (g : github) args =
   | _ -> Error out
 
 (* `git ls-remote <url> <ref>`: the sha in the first column, or None when the
-   remote has no such ref.  A FAILURE (unreachable url) is distinct from an
-   absent ref. *)
+   remote has no such ref.  A FAILURE (unreachable url, garbage output) is the
+   SERVICE's problem, not the request's: git's stderr goes to the server log,
+   the requester gets the incident id. *)
 let ls_remote g ~url ~ref_ =
   match run_git g [ "ls-remote"; url; ref_ ] with
   | Error out ->
-    err "Could not reach `%s`: %s" url
-      (if out = "" then "git ls-remote failed" else out)
+    Api.internal
+      ~detail:
+        (Printf.sprintf "git ls-remote %s %s failed: %s" url ref_
+           (if out = "" then "(no output)" else out))
+      "The service could not reach `%s` to resolve refs." url
   | Ok "" -> Ok None
   | Ok out -> (
     match Util.split_on ~sep:'\t' (List.hd (Util.split_on ~sep:'\n' out)) with
     | sha :: _ when is_hex sha && String.length sha >= 40 -> Ok (Some sha)
-    | _ -> err "Unexpected ls-remote output from `%s`: %s" url out)
+    | _ ->
+      Api.internal
+        ~detail:
+          (Printf.sprintf "unexpected ls-remote output from %s for %s: %s" url
+             ref_ out)
+        "The service got an unexpected answer from `%s` while resolving refs."
+        url)
 
 let github_variant g entry =
   if is_hex entry && String.length entry >= 7 then
@@ -205,7 +215,11 @@ let ensure_cache g =
   else
     match run_git g [ "init"; "--quiet"; "--bare"; g.cache_dir ] with
     | Ok _ -> Ok ()
-    | Error out -> err "Could not create the git cache at %s: %s" g.cache_dir out
+    | Error out ->
+      Api.internal
+        ~detail:
+          (Printf.sprintf "git init --bare %s failed: %s" g.cache_dir out)
+        "The service could not prepare its git cache."
 
 (* The merge-base baseline: fetch the PR head and the base branch into the
    cache, then ask git.  This is the one place that needs commit OBJECTS
@@ -226,15 +240,26 @@ let merge_base g ~url ~number ~base_ref ~head_sha =
         ]
     with
     | Ok _ -> Ok ""
-    | Error out -> err "Could not fetch `%s` from `%s`: %s" base_ref url out
+    | Error out ->
+      Api.internal
+        ~detail:
+          (Printf.sprintf "fetch of %s + refs/pull/%d/head from %s failed: %s"
+             base_ref number url out)
+        "The service could not fetch `%s` to compute the merge base. Give an \
+         explicit baseline with `vs=` while this persists."
+        base_ref
   in
   match run_git g [ gd; "merge-base"; "refs/bench/base"; head_sha ] with
   | Ok sha when is_hex sha -> Ok sha
   | Ok out | Error out ->
-    err
-      "Could not compute the merge base of `%s` and the PR head `%s`: %s. \
-       Give an explicit baseline with `vs=`."
-      base_ref (String.sub head_sha 0 7) out
+    Api.internal
+      ~detail:
+        (Printf.sprintf "merge-base %s %s in %s failed: %s" base_ref head_sha
+           g.cache_dir out)
+      "The service could not compute the merge base of `%s` and the PR head \
+       `%s`. Give an explicit baseline with `vs=` while this persists."
+      base_ref
+      (String.sub head_sha 0 7)
 
 let github g =
   {

@@ -332,9 +332,14 @@ let submit deps (auth0 : Api.auth) (s : Api.submit) =
       let* program_count =
         match deps.program_count ~tags:(Request.resolved_tags request) with
         | Ok n -> Ok n
-        | Error msg ->
-          err Api.Bad_command "The benchmark selection failed to resolve: %s"
-            msg
+        (* The bridge failing is OUR fault (a running-ng drift, a broken
+           helper), never the command's: the raw tool output goes to the
+           server log, the user gets the incident id. *)
+        | Error detail ->
+          Api.internal
+            ~detail:("tag filter failed for " ^ Util.trim request.Request.raw
+                     ^ ": " ^ detail)
+            "The service failed while resolving the benchmark selection."
       in
       let run_id = fresh_run_id deps in
       let pr_url =
