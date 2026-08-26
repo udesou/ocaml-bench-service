@@ -95,10 +95,19 @@ are capped to a few active runs, and machines can be drained by admins.
 Still deliberately missing: run keys (so no result reuse yet) and anything
 that executes — the queue's far side is API B, the agent.
 
+The **webview** is the public runs index (pkgeval-reports style): one static,
+self-contained page (`webview/index.html`) polling `runs.json`, a snapshot of
+every §8 meta record that `bench-serve` rewrites on each state change.
+`scripts/webview.sh [port]` serves it with python's http.server — no sudo, no
+nginx. Browsers cannot speak capnp, so files-over-HTTP is deliberately the
+webview's read path; when the store (API C) lands, it takes over both the
+files and their durability, and per-run dashboard links go live (until then
+the index shows an honest "pending agent" instead of dead links).
+
 Standing a server up (a laptop now, a VPS later — the service moves with its
 state directory, not with code changes) is `scripts/server-setup.sh` +
-`scripts/serve.sh`; the whole recipe, including wiring the fork's bot, is in
-[docs/DEPLOY.md](docs/DEPLOY.md).
+`scripts/serve.sh` + `scripts/webview.sh`; the whole recipe, including wiring
+the fork's bot, is in [docs/DEPLOY.md](docs/DEPLOY.md).
 
 A config file alone would not be enough, which is the main reason a "run spec"
 exists at all: the benchmark selection travels as the `RUNNING_TAG` *environment
@@ -238,6 +247,7 @@ paths, not a transport.
 | `rpc/` | the Cap'n Proto adapter: the schema and the service/client glue |
 | `bin/bench_serve.ml` | the server daemon; writes the capability files |
 | `bot/` | the GitHub Action for `/bench` PR comments, and its setup notes |
+| `webview/`, `scripts/webview.sh` | the public runs index: a static page over `runs.json` |
 | `scripts/serve.sh`, `docs/DEPLOY.md` | one deployment = one env file; the move-hosts recipe |
 | `lib/request.ml` | the comment grammar |
 | `lib/gen.ml` | request + suite definitions → a running-ng config |

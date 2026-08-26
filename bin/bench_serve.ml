@@ -192,6 +192,8 @@ let () =
   let o = parse_args (List.tl (Array.to_list Sys.argv)) in
   let d = deps o in
   mkdir_p o.state_dir;
+  (* the webview snapshot survives restarts and backfills pre-webview runs *)
+  Server.refresh_index d;
   let caps_dir =
     Option.value o.caps_dir ~default:(Filename.concat o.state_dir "caps")
   in

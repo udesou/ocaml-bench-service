@@ -18,8 +18,13 @@ resolves, queues, and **acknowledges** — the run directories it writes under
 scripts/server-setup.sh              # prerequisites, sibling clones, build
 cp service.example.json service.json # allowlist, admins, machines
 cp server.env.example server.env     # the deployment's address
-scripts/serve.sh
+scripts/serve.sh                     # the request server (capnp)
+scripts/webview.sh 8080              # the public runs index (static, http)
 ```
+
+Set `BENCH_BASE_URL` in `server.env` to where the webview is served
+(e.g. `http://host:8080`): acknowledgement links then anchor into the index
+(`…/#run-id`).
 
 On start, `bench-serve` prints the capability files it wrote:
 `<state>/caps/<login>.cap` for every configured login, and `bot.cap`.

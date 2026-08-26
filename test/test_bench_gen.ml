@@ -991,6 +991,22 @@ let test_server () =
       (List.for_all
          (fun f -> Sys.file_exists (Filename.concat dir f))
          [ "runspec.json"; "meta.json"; "request.json"; "config.yml" ]);
+    (* The webview snapshot: rewritten on every state change, carrying the
+       full meta records (pins included) the index renders. *)
+    (let snap =
+       Filename.concat (Filename.concat state_dir "webview") "runs.json"
+     in
+     match Yojson.Safe.from_string (Util.read_file snap) with
+     | exception _ -> fail "webview/runs.json missing or unparseable"
+     | j -> (
+       match member "runs" j with
+       | `List (m :: _) ->
+         check_true ~name:"runs.json lists the new run"
+           (jstr (member "run_id" m) = Some a.Api.run_id);
+         check_eq_opt ~name:"runs.json carries the baseline pin"
+           ~expected:(Some "ocaml-5.5.0")
+           ~actual:(jstr (member "name" (member "baseline" m)))
+       | _ -> fail "runs.json has no runs array"));
     (match Server.status deps user ~run_id:a.Api.run_id with
     | Ok st -> check_true ~name:"a fresh run is queued" (st.Api.state = Api.Queued)
     | Error e -> fail "status: %s" (markdown e));

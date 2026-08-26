@@ -248,6 +248,10 @@ type meta = {
   command : string;
   machine : string;
   family : family;
+  baseline : runtime_pin option;
+      (* §8 makes this required; option here because pre-webview rows
+         lack it and the index must keep rendering them *)
+  candidates : runtime_pin list;
   queued_at : string;
   finished_at : string option;
   summary : summary option;
@@ -579,6 +583,26 @@ let meta_of_json j =
       Some family,
       Some queued_at ) ->
     let links_j = mem "links" in
+    let pin_of j =
+      match json_str (json_member "name" j) with
+      | None -> None
+      | Some name ->
+        Some
+          {
+            name;
+            commit =
+              Option.value
+                (json_str (json_member "commit" j))
+                ~default:
+                  (Option.value
+                     (json_str (json_member "version" j))
+                     ~default:"");
+            configure_args =
+              Option.value
+                (json_str (json_member "configure_args" j))
+                ~default:"";
+          }
+    in
     Ok
       {
         run_id;
@@ -589,6 +613,11 @@ let meta_of_json j =
         command;
         machine;
         family;
+        baseline = pin_of (mem "baseline");
+        candidates =
+          (match mem "candidates" with
+          | `List l -> List.filter_map pin_of l
+          | _ -> []);
         queued_at;
         finished_at = json_str (mem "finished_at");
         summary =
@@ -625,6 +654,9 @@ let json_of_meta (m : meta) =
       ("command", str m.command);
       ("machine", str m.machine);
       ("family", str (string_of_family m.family));
+      ( "baseline",
+        match m.baseline with None -> `Null | Some p -> json_of_runtime_pin p );
+      ("candidates", `List (List.map json_of_runtime_pin m.candidates));
       ("queued_at", str m.queued_at);
       ("finished_at", opt_str m.finished_at);
       ( "summary",

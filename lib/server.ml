@@ -95,9 +95,24 @@ let all_metas deps =
 let is_active (m : Api.meta) =
   match m.state with Api.Queued | Api.Running -> true | _ -> false
 
+(* The webview's data: one snapshot of every meta record, rewritten on every
+   state change (the §10/Q6 model: a static page polls this file -- with a
+   capnp-only wire, files over HTTP are the browser's read path, not API A). *)
+let refresh_index deps =
+  let dir = Filename.concat deps.state_dir "webview" in
+  mkdir_p dir;
+  write_json
+    (Filename.concat dir "runs.json")
+    (`Assoc
+      [
+        ("generated_at", `String (iso_now ()));
+        ("runs", `List (List.map Api.json_of_meta (all_metas deps)));
+      ])
+
 let save_meta deps (m : Api.meta) =
   write_json (Filename.concat (run_dir deps m.run_id) "meta.json")
-    (Api.json_of_meta m)
+    (Api.json_of_meta m);
+  refresh_index deps
 
 let stamp deps run_id state_name =
   (* append state -> timestamp to request.json's audit trail *)
@@ -148,7 +163,9 @@ let set_drained deps names =
 let links deps run_id =
   {
     Api.status = Printf.sprintf "%s/runs/%s/status" deps.base_url run_id;
-    webview = Printf.sprintf "%s/runs/%s/" deps.base_url run_id;
+    (* The index highlights the anchored run; per-run pages replace this
+       once bundles exist (§10). *)
+    webview = Printf.sprintf "%s/#%s" deps.base_url run_id;
   }
 
 (* The caller proves the login; the CONFIG decides the role and whether the
@@ -414,6 +431,8 @@ let submit deps (auth0 : Api.auth) (s : Api.submit) =
           command = Util.trim request.Request.raw;
           machine = machine.Service_config.name;
           family = request.Request.family;
+          baseline = Some (pin_of_variant baseline);
+          candidates = List.map pin_of_variant candidates;
           queued_at = now;
           finished_at = None;
           summary = None;

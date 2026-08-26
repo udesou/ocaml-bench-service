@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCaml bench — runs</title>
+<!-- The public runs index (§10, Q6): a single static page over runs.json,
+     which the request server rewrites on every state change.  Served by any
+     static file server pointed at <state>/webview/ (scripts/webview.sh).
+     Self-contained on purpose: no CDN, no build step, no framework. -->
+<style>
+  :root {
+    --paper:   #F4F2ED;
+    --surface: #FFFFFF;
+    --ink:     #1F2328;
+    --soft:    #57606A;
+    --faint:   #8A939E;
+    --rule:    #D9DDE2;
+    --rule2:   #E8EBEE;
+    --accent:  #B34700;
+    --queued:  #8A6D1C; --queued-bg: #F3EAD0;
+    --running: #1F5FA8; --running-bg: #DCE8F6;
+    --done:    #22663F; --done-bg:    #D9EBDF;
+    --bad:     #A03024; --bad-bg:     #F2DCD8;
+    --grey:    #5E6772; --grey-bg:    #E5E8EC;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:   #14181D;
+      --surface: #1B2129;
+      --ink:     #E3E8ED;
+      --soft:    #A6B0BA;
+      --faint:   #6E7A86;
+      --rule:    #303844;
+      --rule2:   #242C36;
+      --accent:  #E8863F;
+      --queued:  #D9B255; --queued-bg: #322A15;
+      --running: #7FB2E8; --running-bg: #16283C;
+      --done:    #79C695; --done-bg:    #17301F;
+      --bad:     #E28073; --bad-bg:     #38201C;
+      --grey:    #9AA5B0; --grey-bg:    #262E38;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 15px/1.55 var(--sans);
+    padding: 0 1.25rem 5rem;
+  }
+  .wrap { max-width: 72rem; margin: 0 auto; }
+
+  header { padding: 2.6rem 0 1.1rem; border-bottom: 2px solid var(--ink); }
+  h1 { margin: 0 0 0.2rem; font-size: 1.55rem; letter-spacing: -0.01em; }
+  h1 .dim { color: var(--faint); font-weight: 400; }
+  .sub { color: var(--soft); margin: 0; font-size: 0.92rem; }
+  .sub code { font-family: var(--mono); font-size: 0.85em; background: var(--rule2); padding: 0.05em 0.3em; border-radius: 3px; }
+
+  .bar {
+    display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;
+    padding: 0.9rem 0;
+  }
+  .count {
+    font-family: var(--mono); font-size: 0.78rem; color: var(--soft);
+    margin-right: auto;
+  }
+  .filters { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+  .filters button {
+    font: 500 0.75rem var(--mono);
+    letter-spacing: 0.04em;
+    padding: 0.28rem 0.6rem;
+    border: 1px solid var(--rule);
+    background: var(--surface);
+    color: var(--soft);
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .filters button[aria-pressed="true"] {
+    border-color: var(--accent); color: var(--accent);
+  }
+  .updated { font-family: var(--mono); font-size: 0.72rem; color: var(--faint); }
+  .updated.stale { color: var(--bad); }
+
+  .tablewrap {
+    overflow-x: auto;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+  }
+  table { border-collapse: collapse; width: 100%; min-width: 58rem; }
+  th {
+    text-align: left;
+    font: 600 0.68rem var(--sans);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--faint);
+    padding: 0.7rem 0.9rem 0.55rem;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  td {
+    padding: 0.6rem 0.9rem;
+    border-bottom: 1px solid var(--rule2);
+    vertical-align: top;
+    font-size: 0.88rem;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:target td, tr.flash td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+
+  .runid { font-family: var(--mono); font-size: 0.8rem; white-space: nowrap; }
+  .runid a { color: var(--ink); text-decoration: none; }
+  .runid a:hover { color: var(--accent); }
+
+  .chip {
+    display: inline-block;
+    font: 600 0.66rem var(--mono);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 0.14rem 0.5rem;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .chip.queued    { color: var(--queued);  background: var(--queued-bg); }
+  .chip.running,
+  .chip.publishing{ color: var(--running); background: var(--running-bg); }
+  .chip.done      { color: var(--done);    background: var(--done-bg); }
+  .chip.failed,
+  .chip.timed_out { color: var(--bad);     background: var(--bad-bg); }
+  .chip.cancelled { color: var(--grey);    background: var(--grey-bg); }
+
+  .cmd { font-family: var(--mono); font-size: 0.78rem; color: var(--soft);
+         max-width: 22rem; overflow: hidden; text-overflow: ellipsis;
+         white-space: nowrap; }
+  .compilers { font-family: var(--mono); font-size: 0.76rem; white-space: nowrap; }
+  .compilers .arrow { color: var(--faint); padding: 0 0.25rem; }
+  .who, .mach { white-space: nowrap; font-size: 0.84rem; }
+  .when { white-space: nowrap; color: var(--soft); font-size: 0.8rem;
+          font-variant-numeric: tabular-nums; }
+  a.pr { color: var(--accent); text-decoration: none; }
+  a.pr:hover { text-decoration: underline; }
+  .pend { color: var(--faint); font-size: 0.78rem; }
+
+  .empty, .error {
+    padding: 3rem 1rem; text-align: center; color: var(--soft);
+  }
+  .error { color: var(--bad); font-family: var(--mono); font-size: 0.85rem; }
+
+  footer {
+    margin-top: 1.4rem;
+    font: 0.72rem var(--mono);
+    color: var(--faint);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>OCaml bench <span class="dim">— runs</span></h1>
+    <p class="sub">Every <code>/bench</code> request, newest first. Reports and
+      dashboards appear per run once measurements exist; until the bench agent
+      lands, runs correctly stay <code>queued</code>.</p>
+  </header>
+
+  <div class="bar">
+    <span class="count" id="count">loading…</span>
+    <nav class="filters" id="filters" aria-label="state filter"></nav>
+    <span class="updated" id="updated"></span>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Run</th><th>State</th><th>Trigger</th><th>By</th>
+          <th>Compilers</th><th>Machine</th><th>Command</th>
+          <th>Queued</th><th>Results</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>no runs yet — comment
+      <code>/bench</code> on a PR, or use bench-cli</div>
+    <div class="error" id="err" hidden></div>
+  </div>
+
+  <footer>data: <a href="runs.json" style="color:inherit">runs.json</a>,
+    rewritten by bench-serve on every state change · page polls every 10 s</footer>
+</div>
+
+<script>
+"use strict";
+const FILTERS = ["all", "queued", "running", "done", "failed", "cancelled"];
+let filter = "all";
+let runs = [];
+let generatedAt = null;
+
+const $ = (id) => document.getElementById(id);
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g,
+    (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+}
+
+function rel(iso) {
+  if (!iso) return "";
+  const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (s < 90) return Math.round(s) + "s ago";
+  if (s < 5400) return Math.round(s / 60) + "m ago";
+  if (s < 129600) return Math.round(s / 3600) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+}
+
+function matches(r) {
+  if (filter === "all") return true;
+  if (filter === "failed") return r.state === "failed" || r.state === "timed_out";
+  if (filter === "running") return r.state === "running" || r.state === "publishing";
+  return r.state === filter;
+}
+
+function trigger(r) {
+  if (r.pr_url) {
+    const m = r.pr_url.match(/\/pull\/(\d+)/);
+    return `<a class="pr" href="${esc(r.pr_url)}">PR&nbsp;#${m ? esc(m[1]) : "?"}</a>`;
+  }
+  return `<span class="pend">cli</span>`;
+}
+
+function compilers(r) {
+  if (!r.baseline || !r.baseline.name) return `<span class="pend">—</span>`;
+  const cands = (r.candidates || []).map((c) => esc(c.name)).join(", ");
+  return `<span class="compilers">${esc(r.baseline.name)}` +
+         (cands ? `<span class="arrow">→</span>${cands}` : "") + `</span>`;
+}
+
+function results(r) {
+  // Real links only exist once a run has published a bundle (§10); a link
+  // that 404s is worse than an honest dash.
+  if (r.state === "done" && r.links) {
+    return `<a class="pr" href="${esc(r.links.webview)}">dashboard</a>`;
+  }
+  return `<span class="pend">— pending agent</span>`;
+}
+
+function render() {
+  const tbody = $("rows");
+  const shown = runs.filter(matches);
+  tbody.innerHTML = shown.map((r) => `
+    <tr id="${esc(r.run_id)}">
+      <td class="runid"><a href="#${esc(r.run_id)}">${esc(r.run_id)}</a></td>
+      <td><span class="chip ${esc(r.state)}">${esc(r.state)}</span></td>
+      <td>${trigger(r)}</td>
+      <td class="who">${esc(r.requested_by)}</td>
+      <td>${compilers(r)}</td>
+      <td class="mach">${esc(r.machine)}</td>
+      <td><div class="cmd" title="${esc(r.command)}">${esc(r.command)}</div></td>
+      <td class="when" title="${esc(r.queued_at)}">${rel(r.queued_at)}</td>
+      <td>${results(r)}</td>
+    </tr>`).join("");
+  $("empty").hidden = shown.length !== 0;
+
+  const total = runs.length;
+  const by = {};
+  for (const r of runs) by[r.state] = (by[r.state] || 0) + 1;
+  $("count").textContent =
+    `${total} run${total === 1 ? "" : "s"}` +
+    Object.entries(by).map(([k, v]) => ` · ${v} ${k}`).join("");
+
+  // honour a #run-anchor arriving from an acknowledgement link
+  if (location.hash.length > 1) {
+    const row = document.getElementById(location.hash.slice(1));
+    if (row && !row.dataset.seen) {
+      row.dataset.seen = "1";
+      row.scrollIntoView({ block: "center" });
+      row.classList.add("flash");
+    }
+  }
+}
+
+function renderFilters() {
+  $("filters").innerHTML = FILTERS.map((f) =>
+    `<button aria-pressed="${f === filter}" data-f="${f}">${f}</button>`).join("");
+}
+$("filters").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  filter = b.dataset.f;
+  renderFilters();
+  render();
+});
+
+async function refresh() {
+  try {
+    const res = await fetch("runs.json", { cache: "no-store" });
+    if (!res.ok) throw new Error(res.status + " " + res.statusText);
+    const data = await res.json();
+    runs = (data.runs || []);
+    generatedAt = data.generated_at || null;
+    $("err").hidden = true;
+    render();
+  } catch (e) {
+    $("err").textContent = "cannot load runs.json: " + e.message;
+    $("err").hidden = false;
+  }
+  tick();
+}
+
+function tick() {
+  const el = $("updated");
+  if (!generatedAt) { el.textContent = ""; return; }
+  const age = (Date.now() - Date.parse(generatedAt)) / 1000;
+  el.textContent = "snapshot " + rel(generatedAt);
+  el.classList.toggle("stale", age > 120);
+}
+
+renderFilters();
+refresh();
+setInterval(refresh, 10000);
+setInterval(tick, 5000);
+</script>
+</body>
+</html>
