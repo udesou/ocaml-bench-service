@@ -6,9 +6,11 @@
 # validators, ocaml-bench-dashboard for the contract vocabulary), and builds
 # the repo-local opam switch.  Linux and macOS.
 #
-# Prerequisites (apt / brew names):
-#   git, opam, python3 with PyYAML         (git opam python3 + pip3 pyyaml)
-#   the capnp schema compiler              (capnproto)
+# Prerequisites:
+#   git, opam, python3 with PyYAML  (macOS: Homebrew's python refuses pip --
+#     put PyYAML in a venv and expose a python3 WRAPPER SCRIPT in
+#     ~/.local/bin; a symlink loses the venv)
+#   the capnp schema compiler       (apt: capnproto / brew: capnp)
 #     -- no sudo? build it from source into ~/.local (see README), this
 #        script and the Makefile look in ~/.local/bin.
 
@@ -23,7 +25,7 @@ need() {
 need git "apt/brew install git"
 need opam "https://opam.ocaml.org/doc/Install.html"
 need python3 "apt/brew install python3"
-need capnp "apt/brew install capnproto, or build into ~/.local"
+need capnp "apt install capnproto / brew install capnp, or build into ~/.local"
 python3 -c 'import yaml' 2>/dev/null \
   || { echo "MISSING: PyYAML  (pip3 install pyyaml)"; missing=1; }
 [ "$missing" -eq 0 ] || exit 1
@@ -41,7 +43,9 @@ clone "${DASHBOARD_REPO:-$HOME/ocaml-bench-dashboard}" https://github.com/udesou
 
 cd "$ROOT"
 [ -d _opam ] || make switch
-make build test
+# An existing switch may predate a dependency change (bitten on macOS when
+# the capnp packages arrived): deps is idempotent, so always refresh.
+make deps build test
 
 echo
 echo "Setup complete. Next:"

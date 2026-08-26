@@ -28,10 +28,19 @@ address, the fingerprint of its secret key, and an unguessable service id.
 Sending someone their file is granting access; there are no accounts or
 passwords anywhere else.
 
-macOS notes: `brew install capnproto pkg-config gmp`, and opam/python as
-usual. The server side has no Linux dependency (it only runs git, python and
-file IO) — but it has only been exercised on Linux so far, so run
-`make test && make live` after setup.
+macOS notes (learned by deploying there — arm64 builds everything cleanly):
+
+- `brew install capnp pkg-config gmp` — Homebrew's formula is **`capnp`**;
+  `capnproto` is the Debian/apt name.
+- Homebrew's python refuses `pip install` (PEP 668): put PyYAML in a venv and
+  expose a **wrapper script** at `~/.local/bin/python3` that execs the venv's
+  python (a symlink loses the venv's site-packages). Every script here puts
+  `~/.local/bin` first on PATH.
+- **AirPlay Receiver owns port 7000** on modern macOS: use another port
+  (`server.env` is where that lives).
+- `BENCH_PUBLIC_ADDRESS` needs a literal IPv4 address or a real DNS name — an
+  mDNS `.local` name resolves IPv6-first and the client stops at the first
+  unroutable address. Bind `tcp:[::]:PORT` for dual-stack listening.
 
 ## The drop-in / drop-out property
 
