@@ -35,7 +35,8 @@ type deps = {
   program_count : tags:string list -> (int, string) result;
       (** running-ng's own tag filter, via the bridge; injectable for tests *)
   resolver : Resolver.t;
-  sources : Runspec.source list;  (** pinned repos for the run spec *)
+  sources : Runspec.source list;
+      (** repos pinned to shas (Resolver.local_source) for the run spec *)
   state_dir : string;
   base_url : string;  (** links in acknowledgements point under here *)
   max_active_per_user : int;  (** queued+running cap per user (Q10) *)
@@ -385,18 +386,15 @@ let submit deps (auth0 : Api.auth) (s : Api.submit) =
       let* spec = Gen.generate ~ctx ~request ~facts:deps.facts
           ~sweepable:deps.sweepable ~variants
       in
-      (* persist the run: this directory IS the queue row *)
+      (* persist the run: this directory IS the queue row.  The spec carries
+         no machine-side detail (§6.1: paths, env and invocation are the
+         agent's); which SLOT executes it is the claim's concern (§6.2). *)
       let dir = run_dir deps run_id in
       mkdir_p dir;
-      let slot =
-        Printf.sprintf "%s:%s" machine.Service_config.name
-          (Option.value machine.Service_config.opamroot
-             ~default:"default-opamroot")
-      in
       Util.write_file
         (Filename.concat dir "runspec.json")
         (Runspec.to_string ~ctx ~request ~spec ~variants ~sources:deps.sources
-           ~run_key:None ~slot);
+           ~run_key:None);
       Util.write_file (Filename.concat dir "config.yml") spec.Gen.config_yaml;
       let now = iso_now () in
       write_json

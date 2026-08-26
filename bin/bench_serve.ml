@@ -169,12 +169,15 @@ let deps o =
         | Error errs -> Error (String.concat "; " errs));
     resolver;
     sources =
-      [
-        Runspec.source ~name:"running-ng" ~dir:o.running_ng_dir
-          ~git_ref:o.running_ng_ref ();
-        Runspec.source ~name:"macro-benches" ~dir:macro_bench_dir
-          ~git_ref:o.macro_benches_ref ();
-      ];
+      (let src name dir ref_ =
+         match Resolver.local_source ~name ~dir ~ref_ () with
+         | Ok s -> s
+         | Error e -> die "%s" e.Api.error_markdown
+       in
+       [
+         src "running-ng" o.running_ng_dir o.running_ng_ref;
+         src "macro-benches" macro_bench_dir o.macro_benches_ref;
+       ]);
     state_dir = o.state_dir;
     base_url = o.base_url;
     max_active_per_user = o.max_active_per_user;

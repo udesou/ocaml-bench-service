@@ -128,8 +128,8 @@ let github_defaults ~cache_dir =
     default_base = "trunk";
   }
 
-let run_git (g : github) args =
-  let cmd = Filename.quote_command g.git args ^ " 2>&1" in
+let git_run ~git args =
+  let cmd = Filename.quote_command git args ^ " 2>&1" in
   let ic = Unix.open_process_in cmd in
   let buf = Buffer.create 1024 in
   (try
@@ -142,6 +142,27 @@ let run_git (g : github) args =
   match status with
   | Unix.WEXITED 0 -> Ok out
   | _ -> Error out
+
+let run_git (g : github) args = git_run ~git:g.git args
+
+(* Pinning a LOCAL checkout: sources carry shas, never refs (§6.1 --
+   everything resolved before dispatch), and the server resolves them from
+   the checkouts it already reads for facts and validation, so no network is
+   involved.  The clone URL comes from the checkout's own origin remote (the
+   directory path stands in for dev checkouts without one). *)
+let local_source ?(git = "git") ~name ~dir ~ref_ () =
+  match git_run ~git [ "-C"; dir; "rev-parse"; ref_ ] with
+  | Error out ->
+    Api.internal
+      ~detail:(Printf.sprintf "rev-parse %s in %s failed: %s" ref_ dir out)
+      "The service could not pin its `%s` checkout to a commit." name
+  | Ok commit ->
+    let repo =
+      match git_run ~git [ "-C"; dir; "remote"; "get-url"; "origin" ] with
+      | Ok url when url <> "" -> url
+      | _ -> dir
+    in
+    Ok (Runspec.source ~name ~repo ~commit ())
 
 (* `git ls-remote <url> <ref>`: the sha in the first column, or None when the
    remote has no such ref.  A FAILURE (unreachable url, garbage output) is the

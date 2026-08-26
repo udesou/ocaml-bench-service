@@ -90,10 +90,12 @@ let deps ?(resolver = Resolver.offline) () =
     resolver;
     sources =
       [
-        Runspec.source ~name:"running-ng" ~dir:"/rng"
-          ~git_ref:"origin/adding-ocaml-support" ();
-        Runspec.source ~name:"macro-benches" ~dir:"/mb" ~git_ref:"origin/master"
-          ();
+        Runspec.source ~name:"running-ng"
+          ~repo:"https://github.com/udesou/running-ng"
+          ~commit:"1111111111111111111111111111111111111111" ();
+        Runspec.source ~name:"macro-benches"
+          ~repo:"https://github.com/ocaml-bench/macro-benches"
+          ~commit:"2222222222222222222222222222222222222222" ();
       ];
     state_dir = fresh_state ();
     base_url = "http://bench.test";

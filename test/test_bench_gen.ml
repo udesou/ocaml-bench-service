@@ -600,11 +600,14 @@ let test_runspec () =
   match gen "/bench tag=small invocations=1" with
   | Error e -> fail "runspec: generation failed: %s" (markdown e)
   | Ok spec ->
+    let rng_sha = "1111111111111111111111111111111111111111" in
+    let mb_sha = "2222222222222222222222222222222222222222" in
     let sources =
       [
-        Runspec.source ~name:"running-ng" ~dir:"/rng"
-          ~git_ref:"origin/adding-ocaml-support" ();
-        Runspec.source ~name:"macro-benches" ~dir:"/mb" ~git_ref:"origin/master"
+        Runspec.source ~name:"running-ng"
+          ~repo:"https://github.com/udesou/running-ng" ~commit:rng_sha ();
+        Runspec.source ~name:"macro-benches"
+          ~repo:"https://github.com/ocaml-bench/macro-benches" ~commit:mb_sha
           ();
       ]
     in
@@ -616,9 +619,8 @@ let test_runspec () =
     let j =
       Runspec.to_json ~ctx:(ctx ()) ~request ~spec
         ~variants:[ base_v; head_v ] ~sources ~run_key:None
-        ~slot:"monolith:default-opamroot"
     in
-    check_eq_opt ~name:"runspec is versioned" ~expected:(Some "2")
+    check_eq_opt ~name:"runspec is versioned" ~expected:(Some "1")
       ~actual:(jstr (member "spec_version" j));
     check_eq_opt ~name:"runspec carries the run id" ~expected:(Some "req-test")
       ~actual:(jstr (member "run_id" j));
@@ -638,11 +640,9 @@ let test_runspec () =
     check_eq_opt ~name:"config md5 matches its contents"
       ~expected:(Some (Digest.to_hex (Digest.string spec.config_yaml)))
       ~actual:(jstr (member "md5" cfg));
-    (* RUNNING_TAG is why a run spec cannot be just a YAML file. *)
-    check_eq_opt ~name:"env carries RUNNING_TAG" ~expected:(Some "small_run")
-      ~actual:(jstr (member "RUNNING_TAG" (member "env" j)));
     (* The selection keeps both spellings: the resolved tag and what the user
-       typed, so the ack can echo the user's own words. *)
+       typed, so the ack can echo the user's own words.  (The AGENT derives
+       RUNNING_TAG from this field: no env block travels in a spec.) *)
     (match member "tags" (member "selection" j) with
     | `List [ t ] ->
       check_eq_opt ~name:"selection resolves the tag"
@@ -650,22 +650,28 @@ let test_runspec () =
       check_eq_opt ~name:"selection keeps the user's spelling"
         ~expected:(Some "small") ~actual:(jstr (member "requested" t))
     | _ -> fail "runspec: expected exactly one selection tag");
-    check_eq_opt ~name:"env carries switch reuse" ~expected:(Some "1")
-      ~actual:(jstr (member "RUNNING_REUSE_SWITCHES" (member "env" j)));
-    (* Both repos pinned by ref, commit left for the agent to fill in -- the
+    (* Both repos pinned to SHAS by the server before dispatch (§6.1) -- the
        macro-benches commit is part of run identity because a benchmark-source
        change does not invalidate a cached binary. *)
     (match member "sources" j with
     | `List [ a; b ] ->
-      check_eq_opt ~name:"first source is running-ng (also the cwd)"
+      check_eq_opt ~name:"first source is running-ng"
         ~expected:(Some "running-ng") ~actual:(jstr (member "name" a));
-      check_eq_opt ~name:"macro-benches is pinned too"
-        ~expected:(Some "macro-benches") ~actual:(jstr (member "name" b));
-      check_true ~name:"commits are the agent's to fill in"
-        (member "commit" a = `Null && member "commit" b = `Null);
-      check_eq_opt ~name:"cwd is the running-ng checkout" ~expected:(Some "/rng")
-        ~actual:(jstr (member "cwd" (member "command" j)))
+      check_eq_opt ~name:"sources carry the clone URL"
+        ~expected:(Some "https://github.com/udesou/running-ng")
+        ~actual:(jstr (member "repo" a));
+      check_eq_opt ~name:"running-ng is pinned to a sha" ~expected:(Some rng_sha)
+        ~actual:(jstr (member "commit" a));
+      check_eq_opt ~name:"macro-benches is pinned to a sha too"
+        ~expected:(Some mb_sha) ~actual:(jstr (member "commit" b))
     | _ -> fail "runspec: expected exactly two sources");
+    (* §6.1: the spec describes WHAT to measure; where things live on the
+       machine, the env and the command line are the agent's, and must not
+       appear at all. *)
+    check_true ~name:"no machine-side blocks in the spec"
+      (List.for_all
+         (fun k -> member k j = `Null)
+         [ "placement"; "env"; "command"; "limits"; "request" ]);
     (* Exactly one baseline, by construction (§5.3): it is the merge base, and
        every delta is relative to it. *)
     check_eq_opt ~name:"the baseline is the merge base"
@@ -679,12 +685,12 @@ let test_runspec () =
     (* The repetition count is `invocations` everywhere (Q17). *)
     check_true ~name:"measurement says invocations"
       (jint (member "invocations" (member "measurement" j)) = Some 1);
-    (* The timeout must exceed the estimate and respect the cold-build floor,
-       or a slot gets freed while the run was still fine. *)
-    let limits = member "limits" j in
-    let est = Option.value (jint (member "estimated_seconds" limits)) ~default:0
-    and tmo = Option.value (jint (member "timeout_seconds" limits)) ~default:0 in
-    check_true ~name:"timeout exceeds the estimate" (tmo > est);
+    (* The timeout is execution-scoped (§6.2, the assignment), not spec
+       content -- but its formula must exceed the estimate and respect the
+       cold-build floor, or a slot gets freed while the run was still fine. *)
+    let tmo = Runspec.timeout_seconds ~cost:spec.Gen.cost in
+    check_true ~name:"timeout exceeds the estimate"
+      (float_of_int tmo > spec.Gen.cost.Cost.seconds);
     check_true ~name:"timeout respects the 90m cold-build floor"
       (tmo >= 90 * 60);
     let dumped = Yojson.Safe.to_string j in
@@ -945,10 +951,12 @@ let test_server () =
       resolver = Resolver.offline;
       sources =
         [
-          Runspec.source ~name:"running-ng" ~dir:"/rng"
-            ~git_ref:"origin/adding-ocaml-support" ();
-          Runspec.source ~name:"macro-benches" ~dir:"/mb"
-            ~git_ref:"origin/master" ();
+          Runspec.source ~name:"running-ng"
+            ~repo:"https://github.com/udesou/running-ng"
+            ~commit:"1111111111111111111111111111111111111111" ();
+          Runspec.source ~name:"macro-benches"
+            ~repo:"https://github.com/ocaml-bench/macro-benches"
+            ~commit:"2222222222222222222222222222222222222222" ();
         ];
       state_dir;
       base_url = "http://bench.test";

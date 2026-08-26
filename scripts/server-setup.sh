@@ -40,6 +40,8 @@ clone() {
 }
 clone "${RUNNING_NG_REPO:-$HOME/running-ng}" https://github.com/udesou/running-ng
 clone "${DASHBOARD_REPO:-$HOME/ocaml-bench-dashboard}" https://github.com/udesou/ocaml-bench-dashboard
+# the server pins macro-benches to a sha per run spec, so it needs the checkout
+clone "${MACRO_BENCHES_REPO:-$HOME/macro-benches}" https://github.com/ocaml-bench/macro-benches
 
 cd "$ROOT"
 [ -d _opam ] || make switch

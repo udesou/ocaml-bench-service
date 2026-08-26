@@ -94,9 +94,14 @@ document is required reading.
   Computed by the server at submission; bench-gen emits `run_key: null` because
   it resolves no refs and knows no machine fingerprint.
 - `lib/runspec.ml` — the generator → agent interface, specified in
-  `docs/RUNSPEC.md`. **Change both together.** Self-contained (config inline, not
-  by path), pins running-ng *and* macro-benches by ref, carries no credentials
-  and no transport (v2 removed `ssh`).
+  `docs/RUNSPEC.md`. **Change both together.** Version 1 (nothing ever
+  shipped): describes only WHAT to measure — config inline, sources and
+  runtimes pinned to SHAS by the server before dispatch
+  (`Resolver.local_source`), and **nothing machine-side**: no paths, no env,
+  no command line, no transport, no credentials. The agent derives all of
+  that from its own config plus the spec (e.g. `RUNNING_TAG` from
+  `selection.tags`); execution-scoped directives (rerun's cache bypass, the
+  timeout) travel in the §6.2 assignment at claim time.
 - `lib/bridge.ml` — the only caller of python.
 - `scripts/rng_helper.py` — `facts` | `validate` | `tagfilter`.
 - `test/` — table tests against `test/fixtures/` snapshots.
@@ -166,7 +171,8 @@ document is required reading.
 - **The macro-benches commit is part of run identity.** Binaries are cached as
   `<benchmark>-<runtime>` and the runtime name encodes only the *compiler* sha, so
   changing benchmark source does not invalidate a cached binary. `sources` in the
-  run spec pins both repos; the runner writes back the commits it used.
+  run spec carries both repos pinned to shas — resolved by the SERVER before
+  dispatch, never left as refs for the agent.
 - **The measurement modifier chain is derived, not hardcoded** (`Gen.modifier_chain`).
   running-ng #15 (`fb9751c`, on `adding-ocaml-support`) moved the sequential
   `re`/`md` onto the benchmarks as a suite/program `ocamlrunparam:` field — five

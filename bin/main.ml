@@ -386,28 +386,28 @@ let cmd_spec o =
         (* The run spec is always written, whatever --format prints: it is the
            artifact the runner consumes and the provenance record archived
            beside the results.  See docs/RUNSPEC.md. *)
+        (* Sources carry shas, never refs (§6.1): pinned here from the local
+           checkouts, exactly as the server does. *)
+        let src name dir ref_ =
+          match Resolver.local_source ~name ~dir ~ref_ () with
+          | Ok s -> s
+          | Error e -> die "%s" e.Api.error_markdown
+        in
         let sources =
           [
-            Runspec.source ~name:"running-ng" ~dir:o.running_ng_dir
-              ~git_ref:o.running_ng_ref ();
-            Runspec.source ~name:"macro-benches" ~dir:pl.p_macro_bench_dir
-              ~git_ref:o.macro_benches_ref ();
+            src "running-ng" o.running_ng_dir o.running_ng_ref;
+            src "macro-benches" pl.p_macro_bench_dir o.macro_benches_ref;
           ]
-        in
-        let slot =
-          Printf.sprintf "%s:%s" pl.p_machine
-            (Option.value pl.p_opamroot ~default:"default-opamroot")
         in
         let runspec_path =
           Filename.concat out_dir (o.request_id ^ ".runspec.json")
         in
-        (* run_key: null on purpose.  The §8.1 key hashes resolved shas, tool
-           versions and the machine's environment fingerprint; bench-gen has
-           none of those, and a partial key would be a wrong one.  The server
-           computes it at submission (lib/run_key.ml). *)
+        (* run_key: null on purpose.  The §8.1 key hashes tool versions and
+           the machine's environment fingerprint, which only agent reports can
+           supply; a partial key would be a wrong one. *)
         let runspec_json =
           Runspec.to_string ~ctx ~request ~spec ~variants:o.variants ~sources
-            ~run_key:None ~slot
+            ~run_key:None
         in
         Util.write_file runspec_path runspec_json;
         if o.format = "json" then print_string runspec_json
