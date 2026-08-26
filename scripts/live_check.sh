@@ -53,6 +53,12 @@ else
 fi
 VOCAB="${VOCAB:-$HOME/ocaml-bench-dashboard/schema/json/vocab.json}"
 
+# The bridge imports running-ng's PYTHON from a source tree, which defaults to
+# the working copy.  RUNNING_NG_SRC overrides it -- needed whenever the pinned
+# config ref and the working copy's code have drifted apart.
+SRC_ARGS=()
+[ -n "${RUNNING_NG_SRC:-}" ] && SRC_ARGS=(--running-ng-src "$RUNNING_NG_SRC")
+
 BASE_V="version:base:5.5.0"
 HEAD_V="commit:pr-1234:c0f8c8ceef751fb3a99652d3d52399db3d1c2aae"
 
@@ -70,7 +76,7 @@ check() {
   n=$((n + 1))
   local out
   out=$(run spec --comment "$1" --base-config "$BASE" --vocab "$VOCAB" \
-          --variant "$BASE_V" --variant "$HEAD_V" \
+          "${SRC_ARGS[@]}" --variant "$BASE_V" --variant "$HEAD_V" \
           --request-id "live-$n" --out "$OUT" --check 2>&1)
   if grep -q '^# validate(): OK' <<<"$out"; then
     echo "  ok    $name"
@@ -88,7 +94,7 @@ check_single() {
   n=$((n + 1))
   local out
   out=$(run spec --comment "$1" --base-config "$BASE" --vocab "$VOCAB" \
-          --variant "$HEAD_V" --request-id "live-$n" --out "$OUT" --check 2>&1)
+          "${SRC_ARGS[@]}" --variant "$HEAD_V" --request-id "live-$n" --out "$OUT" --check 2>&1)
   if grep -q '^# validate(): OK' <<<"$out"; then
     echo "  ok    $name"
   else
@@ -104,7 +110,7 @@ check_rejects() {
   n=$((n + 1))
   local out
   out=$(run spec --comment "$comment" --base-config "$BASE" --vocab "$VOCAB" \
-          --variant "$BASE_V" --variant "$HEAD_V" \
+          "${SRC_ARGS[@]}" --variant "$BASE_V" --variant "$HEAD_V" \
           --request-id "live-$n" --out "$OUT" 2>&1)
   if grep -qF "$needle" <<<"$out"; then
     echo "  ok    $name (refused)"
@@ -147,7 +153,7 @@ cat > "$SVC" <<EOF
 EOF
 opam exec --switch="$SWITCH" -- dune exec --no-build bin/bench_serve.exe -- \
   --service-config "$SVC" --state-dir "$STATE" --resolver offline \
-  --base-config "$BASE" --vocab "$VOCAB" \
+  --base-config "$BASE" --vocab "$VOCAB" "${SRC_ARGS[@]}" \
   --listen "unix:$OUT/server.sock" > "$OUT/serve.log" 2>&1 &
 SERVE_PID=$!
 trap 'kill "$SERVE_PID" 2>/dev/null; rm -rf "$OUT"' EXIT

@@ -64,6 +64,24 @@ def _errors_of(exc):
     return bullets if bullets else [text]
 
 
+def _bm_names(entries):
+    """Program names from a ``benchmarks:`` list.
+
+    running-ng #13 made these mixed lists: plain strings, or per-benchmark
+    dicts ({name/bm_name, timeout, ...}).  Everything downstream wants the
+    names only; sorting a mixed list is a TypeError, so normalise here.
+    """
+    names = []
+    for e in entries or []:
+        if isinstance(e, dict):
+            n = e.get("name") or e.get("bm_name")
+            if n:
+                names.append(str(n))
+        else:
+            names.append(str(e))
+    return sorted(names)
+
+
 def cmd_facts(args):
     """Everything the generator needs to know about the base config.
 
@@ -111,7 +129,7 @@ def cmd_facts(args):
             {
                 "name": name,
                 "programs": sorted(programs_raw),
-                "enabled": sorted(benchmarks.get(name) or []),
+                "enabled": _bm_names(benchmarks.get(name)),
                 "ocamlrunparam": suite_orp,
                 "programs_with_ocamlrunparam": sorted(prog_orp),
             }
@@ -167,7 +185,7 @@ def cmd_tagfilter(args):
     except ValueError as e:
         print(json.dumps({"ok": False, "errors": _errors_of(e)}))
         return
-    kept = {s: sorted(p) for s, p in (cfg.get("benchmarks") or {}).items() if p}
+    kept = {s: _bm_names(p) for s, p in (cfg.get("benchmarks") or {}).items() if p}
     print(
         json.dumps(
             {
