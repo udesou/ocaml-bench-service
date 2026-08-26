@@ -1,12 +1,31 @@
 # The PR bot
 
-A GitHub Actions workflow that turns `/bench` comments on the fork's pull
-requests into API A submissions, and posts the server's markdown back. It is
-deliberately a *thin* client (Q13): no grammar, no rendering, no policy — the
-allowlist decision, the resolution of the PR head and merge base, and every
-message all come from the server.
+Turns `/bench` comments on the fork's pull requests into API A submissions
+and posts the server's markdown back. It is deliberately a *thin* client
+(Q13): no grammar, no rendering, no policy — the allowlist decision, the
+resolution of the PR head and merge base, and every message all come from the
+server. Two interchangeable delivery mechanisms, same behaviour:
 
-## Setup
+| | `bench.yml` (GitHub Action) | `poll.sh` (polling daemon) |
+|---|---|---|
+| runs | on GitHub's runners | next to bench-serve |
+| needs | the server publicly reachable, a hosted bench-cli binary, `BENCH_BOT_CAP` secret | outbound https + an authenticated `gh`; nothing dials in |
+| fit | the eventual public deployment | a server behind NAT (university network, laptop) |
+
+## Polling mode (works from behind NAT)
+
+```sh
+bot/poll.sh <owner/repo> [interval-seconds]     # e.g. bot/poll.sh udesou/ocaml 20
+```
+
+Polls the fork's issue comments (only ones created after startup), submits
+each `/bench …` through `bot.cap` asserting the commenter, and posts the
+reply with `gh`'s logged-in account. Handled comment ids live in
+`<state>/bot-seen`, so restarts never double-post — and the server's
+idempotency key backstops even that. An unlisted commenter gets the polite
+allowlist refusal, posted publicly, which is the intended behaviour.
+
+## Action-mode setup
 
 1. **Run the server somewhere GitHub's runners can reach** (Q3 — host still
    to be decided):
