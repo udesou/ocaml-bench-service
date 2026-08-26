@@ -53,9 +53,16 @@ else
 fi
 VOCAB="${VOCAB:-$HOME/ocaml-bench-dashboard/schema/json/vocab.json}"
 
-# The bridge imports running-ng's PYTHON from a source tree, which defaults to
-# the working copy.  RUNNING_NG_SRC overrides it -- needed whenever the pinned
-# config ref and the working copy's code have drifted apart.
+# The bridge imports running-ng's PYTHON too, and it must come from the SAME
+# pinned ref as the config -- validating a ref's config with another branch's
+# code is exactly the drift this script exists to catch (bitten for real when
+# running-ng #13 changed the benchmarks: entry shape and the working copy was
+# elsewhere).  RUNNING_NG_SRC still overrides, for testing unmerged running-ng
+# changes on purpose.
+if [ -z "${RUNNING_NG_SRC:-}" ] && [ -z "${BASE_CONFIG:-}" ]; then
+  git -C "$RUNNING_NG_REPO" archive "$RUNNING_NG_REF" src | tar -x -C "$OUT"
+  RUNNING_NG_SRC="$OUT/src"
+fi
 SRC_ARGS=()
 [ -n "${RUNNING_NG_SRC:-}" ] && SRC_ARGS=(--running-ng-src "$RUNNING_NG_SRC")
 

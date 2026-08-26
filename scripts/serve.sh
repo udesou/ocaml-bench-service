@@ -32,12 +32,17 @@ ENV_FILE="${1:-$ROOT/server.env}"
 
 mkdir -p "$BENCH_STATE_DIR"
 
-# The base config comes from the PINNED ref, never the working copy: that
-# checkout moves between feature branches (same rule as make live).
+# The base config AND running-ng's python come from the PINNED ref, never the
+# working copy: that checkout moves between feature branches (same rule as
+# make live).  The extracted tree lives in the state dir and is refreshed on
+# every start.
 BASE="$BENCH_STATE_DIR/macro_base.yml"
 git -C "$RUNNING_NG_REPO" show \
   "$RUNNING_NG_REF:src/running/config/base/ocaml/macro_base.yml" > "$BASE" \
   || { echo "cannot read $RUNNING_NG_REF from $RUNNING_NG_REPO (git fetch first?)"; exit 1; }
+RNG_SRC_DIR="$BENCH_STATE_DIR/running-ng-src"
+rm -rf "$RNG_SRC_DIR" && mkdir -p "$RNG_SRC_DIR"
+git -C "$RUNNING_NG_REPO" archive "$RUNNING_NG_REF" src | tar -x -C "$RNG_SRC_DIR"
 
 args=(
   --service-config "$BENCH_SERVICE_CONFIG"
@@ -47,7 +52,7 @@ args=(
   --base-url "$BENCH_BASE_URL"
   --base-config "$BASE"
   --vocab "$VOCAB"
-  --running-ng-src "$RUNNING_NG_REPO/src"
+  --running-ng-src "$RNG_SRC_DIR/src"
   --running-ng-dir "$RUNNING_NG_REPO"
   --running-ng-ref "$RUNNING_NG_REF"
   --helper "$ROOT/scripts/rng_helper.py"
