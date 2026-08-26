@@ -31,8 +31,15 @@ mkdir -p "$STATE"
 touch "$SEEN"
 
 SELF="$(gh api user -q .login)" || { echo "gh is not authenticated"; exit 1; }
-# Only comments from now on: history is not ours to answer.
-SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# Look back a little on startup so a restart does not orphan comments made
+# while the bot was down; bot-seen (and the server's idempotency key behind
+# it) keeps the overlap from double-posting.  Loop safety needs no author
+# check: the trigger is `startswith("/bench")` and no reply the bot posts
+# ever starts with that -- an author==SELF guard would break the common
+# single-account setup where the operator IS the posting account.
+LOOKBACK="${BENCH_BOT_LOOKBACK:-900}"
+SINCE="$(date -u -d "@$(( $(date +%s) - LOOKBACK ))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+      || date -u -v-"${LOOKBACK}"S +%Y-%m-%dT%H:%M:%SZ)"
 
 cli() { (cd "$ROOT" && opam exec --switch=. -- dune exec --no-build bin/bench_cli.exe -- "$@"); }
 
@@ -46,10 +53,6 @@ while :; do
     id=$(field .id)
     grep -qx "$id" "$SEEN" && continue
     author=$(field '.user.login')
-    if [ "$author" = "$SELF" ]; then
-      echo "$id" >> "$SEEN"
-      continue
-    fi
     issue_url=$(field .issue_url)
     number="${issue_url##*/}"
     comment_url=$(field .html_url)
