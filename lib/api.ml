@@ -105,9 +105,12 @@ type family = Macro | Micro (* Micro is reserved: refused until §12 lands *)
 
 type runtime_pin = {
   name : string;
-      (** running-ng runtime name; doubles as the compiler cache key,
-          e.g. "ocaml-pr-14796-e5f6a7b" *)
+      (** running-ng runtime name = the compiler cache key.
+          Server-constructed, injective in (sha, configure_args). *)
   commit : string;  (** resolved sha; never a ref *)
+  repo : string;
+      (** clone URL the sha is fetched from: a fork PR's head exists only on
+          the fork.  Not part of identity -- a sha is globally unique. *)
   configure_args : string;  (** e.g. "--enable-flambda" *)
 }
 (* Commit-only, decided: a released baseline (vs=5.4.1) is resolved by the
@@ -436,6 +439,7 @@ let json_of_runtime_pin (p : runtime_pin) =
     [
       ("name", str p.name);
       ("commit", str p.commit);
+      ("repo", str p.repo);
       ("configure_args", str p.configure_args);
     ]
 
@@ -597,6 +601,10 @@ let meta_of_json j =
                   (Option.value
                      (json_str (json_member "version" j))
                      ~default:"");
+            repo =
+              Option.value
+                (json_str (json_member "repo" j))
+                ~default:"https://github.com/ocaml/ocaml";
             configure_args =
               Option.value
                 (json_str (json_member "configure_args" j))

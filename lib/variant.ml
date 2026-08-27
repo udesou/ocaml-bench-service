@@ -13,6 +13,11 @@ type t = {
   label : string;
   spec : spec;
   role : role;
+  repo : string option;
+      (* clone URL the sha is fetched from, when it is not the default
+         compiler repo -- a fork PR's head sha exists ONLY on the fork, so
+         building it from ocaml/ocaml would fail.  Not part of the runtime
+         NAME: a sha is globally unique, so identity is unaffected. *)
   configure_args : string;
       (* e.g. "--enable-flambda --enable-frame-pointers" (§5.3 runtime_pin),
          whitespace-separated.  Part of the requested build identity: it goes
@@ -102,6 +107,7 @@ let of_cli_string s =
         label;
         spec = Version v;
         role = Candidate;
+        repo = None;
         configure_args = String.concat ":" args;
       }
   | "commit" :: label :: sha :: args ->
@@ -110,6 +116,7 @@ let of_cli_string s =
         label;
         spec = Commit sha;
         role = Candidate;
+        repo = None;
         configure_args = String.concat ":" args;
       }
   | _ ->

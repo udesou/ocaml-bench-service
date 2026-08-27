@@ -60,7 +60,13 @@ let json_of_pin (v : Variant.t) =
   `Assoc
     ((("name", str (Variant.runtime_name v))
      :: List.map (fun (k, value) -> (k, str value)) (Variant.yaml_fields v))
-    @ [ ("configure_args", str v.Variant.configure_args) ])
+    @ [
+        ( "repo",
+          str
+            (Option.value v.Variant.repo
+               ~default:"https://github.com/ocaml/ocaml") );
+        ("configure_args", str v.Variant.configure_args);
+      ])
 
 let json_of_source s =
   `Assoc

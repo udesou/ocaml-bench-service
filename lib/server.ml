@@ -184,7 +184,7 @@ let require_admin (auth : Api.auth) =
     err Api.Forbidden
       "Only admins may do that. Ask a maintainer listed in `admins`."
 
-let pin_of_variant (v : Variant.t) =
+let pin_of_variant ~default_repo (v : Variant.t) =
   {
     Api.name = Variant.runtime_name v;
     commit =
@@ -193,6 +193,7 @@ let pin_of_variant (v : Variant.t) =
       (* Offline placeholder: the GitHub resolver pins the release tag's sha
          here.  Until then the version string is the truthful pin value. *)
       | Variant.Version ver -> ver);
+    repo = Option.value v.Variant.repo ~default:default_repo;
     configure_args = v.Variant.configure_args;
   }
 
@@ -305,6 +306,7 @@ let submit deps (auth0 : Api.auth) (s : Api.submit) =
     let* variants =
       deps.resolver.Resolver.variants ~origin:s.Api.origin ~vs:request.Request.vs
     in
+    let default_repo = deps.service.Service_config.compiler_repo in
     let normalized =
       String.concat " " (Util.tokens (Util.trim request.Request.raw))
     in
@@ -429,8 +431,8 @@ let submit deps (auth0 : Api.auth) (s : Api.submit) =
           command = Util.trim request.Request.raw;
           machine = machine.Service_config.name;
           family = request.Request.family;
-          baseline = Some (pin_of_variant baseline);
-          candidates = List.map pin_of_variant candidates;
+          baseline = Some (pin_of_variant ~default_repo baseline);
+          candidates = List.map (pin_of_variant ~default_repo) candidates;
           queued_at = now;
           finished_at = None;
           summary = None;
@@ -453,8 +455,8 @@ let submit deps (auth0 : Api.auth) (s : Api.submit) =
       in
       let resolved =
         {
-          Api.baseline = pin_of_variant baseline;
-          candidates = List.map pin_of_variant candidates;
+          Api.baseline = pin_of_variant ~default_repo baseline;
+          candidates = List.map (pin_of_variant ~default_repo) candidates;
           family = request.Request.family;
           tags = spec.Gen.tags;
           invocations = spec.Gen.cost.Cost.invocations;

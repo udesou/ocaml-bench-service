@@ -75,6 +75,7 @@ let base_v =
     Variant.label = "base";
     spec = Variant.Version "5.5.0";
     role = Variant.Baseline;
+    repo = None;
     configure_args = "";
   }
 
@@ -83,6 +84,7 @@ let head_v =
     Variant.label = "pr-1234";
     spec = Variant.Commit "c0f8c8ceef751fb3a99652d3d52399db3d1c2aae";
     role = Variant.Candidate;
+    repo = None;
     configure_args = "";
   }
 
@@ -493,6 +495,7 @@ let test_variant_naming () =
      {
        head_v with
        label = "fp";
+       repo = Some "https://github.com/udesou/ocaml";
        configure_args = "--enable-frame-pointers --enable-flambda";
      }
    in
@@ -503,6 +506,10 @@ let test_variant_naming () =
        ~needle:
          "    configure_args: [\"--enable-frame-pointers\", \
           \"--enable-flambda\"]"
+       spec.config_yaml;
+     (* a fork PR's head builds from the fork, not the default repo *)
+     check_contains ~name:"config emits the pin's repo"
+       ~needle:"    repo: \"https://github.com/udesou/ocaml\""
        spec.config_yaml);
   match Variant.of_cli_string "version:base:5.5.0" with
   | Ok v -> check_eq ~name:"configure args default empty" ~expected:"" ~actual:v.configure_args
@@ -942,7 +949,10 @@ let test_github_resolver () =
       && b.Variant.role = Variant.Baseline);
     check_eq ~name:"the PR head is named pr-<n>-<sha>"
       ~expected:("ocaml-pr-7-" ^ short head_sha)
-      ~actual:(Variant.runtime_name h)
+      ~actual:(Variant.runtime_name h);
+    (* the head sha exists only on the PR's own repository *)
+    check_true ~name:"the head pin carries the PR's repo"
+      (h.Variant.repo = Some repo)
   | Ok _ -> fail "PR resolution: expected baseline + head"
   | Error e -> fail "PR resolution: %s" (markdown e));
   (* vs= on a PR overrides the baseline; the head stays a candidate. *)

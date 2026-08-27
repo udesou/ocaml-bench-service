@@ -373,6 +373,12 @@ let generate ~ctx ~(request : Request.t) ~(facts : Facts.t) ~sweepable ~variants
         (fun (k, value) ->
           Buffer.add_string b (Printf.sprintf "    %s: %s\n" k (quote value)))
         (Variant.yaml_fields v);
+      (* the sha's home when it is not the default compiler repo: a fork
+         PR's head exists only on the fork *)
+      (match v.Variant.repo with
+      | Some url ->
+        Buffer.add_string b (Printf.sprintf "    repo: %s\n" (quote url))
+      | None -> ());
       (* running-ng passes this list to `opam compiler create
          --configure-command "./configure <args>"`. *)
       if v.Variant.configure_args <> "" then

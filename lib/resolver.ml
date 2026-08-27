@@ -47,6 +47,7 @@ let offline_variant entry =
         Variant.label = "";
         spec = Variant.Version entry;
         role = Variant.Candidate;
+        repo = None;
         configure_args = "";
       }
   else if is_hex entry && String.length entry >= 7 then
@@ -55,6 +56,7 @@ let offline_variant entry =
         Variant.label = "";
         spec = Variant.Commit (String.lowercase_ascii entry);
         role = Variant.Candidate;
+        repo = None;
         configure_args = "";
       }
   else
@@ -195,6 +197,7 @@ let github_variant g entry =
         Variant.label = "";
         spec = Variant.Commit (String.lowercase_ascii entry);
         role = Variant.Candidate;
+        repo = Some g.compiler_repo;
         configure_args = "";
       }
   else
@@ -203,6 +206,7 @@ let github_variant g entry =
         Variant.label = entry;
         spec = Variant.Commit sha;
         role = Variant.Candidate;
+        repo = Some g.compiler_repo;
         configure_args = "";
       }
     in
@@ -310,6 +314,8 @@ let github g =
               Variant.label = Printf.sprintf "pr-%d" ctx.Api.number;
               spec = Variant.Commit head_sha;
               role = Variant.Candidate;
+              (* the head sha exists only on the PR's own repository *)
+              repo = Some url;
               configure_args = "";
             }
           in
@@ -332,6 +338,9 @@ let github g =
                   Variant.label = "base";
                   spec = Variant.Commit mb;
                   role = Variant.Baseline;
+                  (* the merge base is an ancestor of the PR head, so the
+                     PR's repository is guaranteed to serve it *)
+                  repo = Some url;
                   configure_args = "";
                 };
                 head;
