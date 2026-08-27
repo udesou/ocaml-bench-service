@@ -66,8 +66,10 @@ window() {
   screen -S "$SESSION" -X screen -t "$title" bash -c "cd $(printf %q "$ROOT") && $cmd"
 }
 
-# window 0 comes with the session; the rest are added to it
-screen -dmS "$SESSION" -t serve bash -c \
+# window 0 comes with the session; the rest are added to it.  -h raises
+# screen's per-window history from its default 100 lines -- the tee'd logs
+# in the state dir remain the authoritative record either way.
+screen -h 5000 -dmS "$SESSION" -t serve bash -c \
   "cd $(printf %q "$ROOT") && scripts/serve.sh 2>&1 | tee -a $(printf %q "$BENCH_STATE_DIR")/serve.log"
 window webview "scripts/webview.sh $BENCH_WEBVIEW_PORT 2>&1 | tee -a $(printf %q "$BENCH_STATE_DIR")/webview.log"
 
