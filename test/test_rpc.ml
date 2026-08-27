@@ -97,6 +97,10 @@ let deps ?(resolver = Resolver.offline) () =
           ~repo:"https://github.com/ocaml-bench/macro-benches"
           ~commit:"2222222222222222222222222222222222222222" ();
       ];
+    pin_config = [];
+    service_version = "test";
+    validate_pin = (fun _ ~commit:_ -> Ok ());
+    on_bump = ignore;
     state_dir = fresh_state ();
     base_url = "http://bench.test";
     max_active_per_user = 4;

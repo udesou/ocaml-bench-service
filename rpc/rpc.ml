@@ -232,6 +232,40 @@ let bench_api deps ~login =
          release_param_caps ();
          unit_result (Server.requeue deps auth ~run_id)
 
+       method versions_impl _params release_param_caps =
+         let open B.Versions in
+         release_param_caps ();
+         (match Server.versions deps auth with
+         | Error e -> fail_api e
+         | Ok v ->
+           text_result Results.init_pointer Results.versions_json_set
+             (Yojson.Safe.to_string (Api.json_of_versions v)))
+
+       method bump_impl params release_param_caps =
+         let open B.Bump in
+         let component = Params.component_get params in
+         let target =
+           match Params.target_get params with "" -> None | t -> Some t
+         in
+         release_param_caps ();
+         (match Api.component_of_string component with
+         | None ->
+           fail_api
+             {
+               Api.code = Api.Bad_command;
+               error_markdown =
+                 Printf.sprintf
+                   "`%s` is not a bumpable component; they are: running-ng, \
+                    macro-benches, benches, olly, dashboard."
+                   component;
+             }
+         | Some component -> (
+           match Server.bump deps auth ~component ?to_:target () with
+           | Error e -> fail_api e
+           | Ok pin ->
+             text_result Results.init_pointer Results.pin_json_set
+               (Yojson.Safe.to_string (Api.json_of_pin pin))))
+
        method evict_impl params release_param_caps =
          let open B.Evict in
          let machine = Params.machine_get params in
@@ -381,6 +415,20 @@ module Client = struct
     in
     Params.run_id_set params run_id;
     call t method_id request (fun _ -> ())
+
+  let versions t =
+    let open B.Versions in
+    let request, _ = Capnp_rpc.Capability.Request.create Params.init_pointer in
+    call t method_id request (fun r -> json (Results.versions_json_get r))
+
+  let bump t ~component ?target () =
+    let open B.Bump in
+    let request, params =
+      Capnp_rpc.Capability.Request.create Params.init_pointer
+    in
+    Params.component_set params component;
+    Params.target_set params (Option.value target ~default:"");
+    call t method_id request (fun r -> json (Results.pin_json_get r))
 
   let evict t ~machine ~runtime_name =
     let open B.Evict in

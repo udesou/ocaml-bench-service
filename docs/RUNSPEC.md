@@ -51,9 +51,11 @@ fingerprint) — a partial key would be a wrong one.
 the run draws from, so micro becomes a data change rather than a schema change.
 
 ### `sources` — list of `{name, repo, commit}`
-One entry per repo the run needs: `running-ng` and `macro-benches` (or
-`benches`, when micro lands). `repo` is the clone URL; `commit` is the sha the
-server resolved before dispatch. The macro-benches commit is part of the
+One entry per repo the run needs: `running-ng`, `macro-benches` (or
+`benches`, when micro lands), and `olly` (runtime_events_tools). `repo` is
+the clone URL; `commit` is the sha the server resolved — a snapshot of the
+server's pins (`pins.json`, changed only by the admin `bump` op) at
+submission time. The macro-benches commit is part of the
 run's identity: benchmark binaries are cached as `<benchmark>-<runtime>` and
 the runtime name encodes only the *compiler* sha, so a benchmark-source change
 does not invalidate a cached binary — without this pin, a run silently

@@ -212,6 +212,45 @@ type machine_type = string
 (* a bare name for now, deliberately: what a machine should expose to
    requesters (architecture? governor? dedicated or not?) is undecided *)
 
+(* --- version pins (§6.3) ---------------------------------------------------- *)
+
+(* The bumpable components: everything the server pins into specs and builds.
+   The service and the agent themselves are absent on purpose -- they change
+   by DEPLOYING, not bumping, and the variant makes that unrepresentable. *)
+type component = Running_ng | Macro_benches | Benches | Olly | Dashboard
+
+type pin = {
+  pinned_component : component;
+  track : string;  (** what a bare bump re-resolves: a ref or tag *)
+  commit : string;  (** the adopted sha *)
+  version : string option;  (** X.Y.Z where the component declares one *)
+  bumped_at : string;
+  bumped_by : string;
+}
+
+type versions = {
+  service : string;  (** the server's own build; changes by deploying *)
+  pins : pin list;
+  machines : (string * (string * string) list) list;
+      (** machine -> agent-REPORTED versions (agent build, olly checkout,
+          kernel ...); empty until agents exist *)
+}
+
+let string_of_component = function
+  | Running_ng -> "running-ng"
+  | Macro_benches -> "macro-benches"
+  | Benches -> "benches"
+  | Olly -> "olly"
+  | Dashboard -> "dashboard"
+
+let component_of_string = function
+  | "running-ng" -> Some Running_ng
+  | "macro-benches" -> Some Macro_benches
+  | "benches" -> Some Benches
+  | "olly" -> Some Olly
+  | "dashboard" -> Some Dashboard
+  | _ -> None
+
 type vocab = {
   machines : machine_type list;
   families : family list;  (** [Macro] today; Micro reserved *)
@@ -291,11 +330,18 @@ module type REQUEST_API = sig
   val vocab : unit -> vocab (* machines, tags, sweepable params *)
 
   (* admin only *)
+  val versions : auth -> (versions, error) result (* what the service pins *)
   val machines : auth -> (machine_status list, error) result
   val drain : auth -> machine:string -> (unit, error) result
   val undrain : auth -> machine:string -> (unit, error) result
   val requeue : auth -> run_id:string -> (unit, error) result
   val evict : auth -> machine:string -> cache_selector -> (int64, error) result
+
+  val bump :
+    auth -> component:component -> ?to_:string -> unit -> (pin, error) result
+  (* adopt a new version: bare bump re-resolves [track]; [to_] pins a
+     ref/tag/sha.  Validated before adoption; queued specs are untouched
+     (they snapshot pins at submission). *)
 end
 
 (* --- string forms ---------------------------------------------------------- *)
@@ -650,6 +696,50 @@ let meta_of_json j =
           };
       }
   | _ -> Error "meta.json is missing a required field"
+
+(* pin round-trips: pins.json is the server's control file. *)
+let json_of_pin (p : pin) =
+  `Assoc
+    [
+      ("component", str (string_of_component p.pinned_component));
+      ("track", str p.track);
+      ("commit", str p.commit);
+      ("version", opt_str p.version);
+      ("bumped_at", str p.bumped_at);
+      ("bumped_by", str p.bumped_by);
+    ]
+
+let pin_of_json j =
+  let mem k = json_member k j in
+  match
+    ( Option.bind (json_str (mem "component")) component_of_string,
+      json_str (mem "track"),
+      json_str (mem "commit") )
+  with
+  | Some pinned_component, Some track, Some commit ->
+    Ok
+      {
+        pinned_component;
+        track;
+        commit;
+        version = json_str (mem "version");
+        bumped_at = Option.value (json_str (mem "bumped_at")) ~default:"";
+        bumped_by = Option.value (json_str (mem "bumped_by")) ~default:"";
+      }
+  | _ -> Error "pin is missing component/track/commit"
+
+let json_of_versions (v : versions) =
+  `Assoc
+    [
+      ("service", str v.service);
+      ("pins", `List (List.map json_of_pin v.pins));
+      ( "machines",
+        `Assoc
+          (List.map
+             (fun (m, kvs) ->
+               (m, `Assoc (List.map (fun (k, value) -> (k, str value)) kvs)))
+             v.machines) );
+    ]
 
 let json_of_meta (m : meta) =
   `Assoc

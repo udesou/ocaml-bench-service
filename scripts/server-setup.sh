@@ -40,8 +40,10 @@ clone() {
 }
 clone "${RUNNING_NG_REPO:-$HOME/running-ng}" https://github.com/udesou/running-ng
 clone "${DASHBOARD_REPO:-$HOME/ocaml-bench-dashboard}" https://github.com/udesou/ocaml-bench-dashboard
-# the server pins macro-benches to a sha per run spec, so it needs the checkout
+# the server pins macro-benches and olly to shas per run spec, so it needs
+# the checkouts
 clone "${MACRO_BENCHES_REPO:-$HOME/macro-benches}" https://github.com/ocaml-bench/macro-benches
+clone "${OLLY_REPO:-$HOME/runtime_events_tools}" https://github.com/tarides/runtime_events_tools
 
 cd "$ROOT"
 [ -d _opam ] || make switch

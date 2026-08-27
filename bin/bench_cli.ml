@@ -68,6 +68,9 @@ let usage () =
   bench-cli cancel <run-id>
   bench-cli help | vocab
   bench-cli machines | drain <m> | undrain <m> | requeue <id> | evict <m> [--runtime NAME]
+  bench-cli versions                       # (admin) what the service pins
+  bench-cli bump <component> [ref|tag|sha] # (admin) adopt a new version;
+                                           # bare bump re-resolves the tracked ref
 
 The capability file is the identity: --cap FILE or $BENCH_CAP. The grammar
 lives in the server; run `bench-cli help` for the /bench reference.
@@ -256,6 +259,22 @@ let () =
           | Ok md -> print_string md
           | Error e -> fail_api e)
     | "vocab", [] -> with_cap o (fun cap -> json_ok (Rpc.Client.vocab cap))
+    | "versions", [] ->
+      with_cap o (fun cap -> json_ok (Rpc.Client.versions cap))
+    | "bump", (component :: rest) ->
+      let target =
+        match rest with
+        | [] -> None
+        | [ t ] -> Some t
+        | _ -> die "bump takes a component and at most one target"
+      in
+      with_cap o (fun cap ->
+          match Rpc.Client.bump cap ~component ?target () with
+          | Ok j ->
+            print_endline (Yojson.Safe.pretty_to_string j);
+            print_endline
+              "pinned; the server restarts itself to adopt (a few seconds)"
+          | Error e -> fail_api e)
     | "machines", [] ->
       with_cap o (fun cap -> json_ok (Rpc.Client.machines cap))
     | "drain", [ m ] ->

@@ -33,8 +33,15 @@ type opts = {
   running_ng_dir : string;
   running_ng_ref : string;
   macro_benches_ref : string;
+  olly_dir : string;
+  olly_ref : string;
+  dashboard_dir : string;
+  dashboard_ref : string;
   helper : string;
   max_active_per_user : int;
+  explicit_base : bool;
+      (* --base-config given: use flag paths verbatim instead of extracting
+         from the running-ng pin (hermetic runs, the live check) *)
 }
 
 let default_opts () =
@@ -54,8 +61,13 @@ let default_opts () =
     running_ng_dir = Filename.concat home "running-ng";
     running_ng_ref = "origin/adding-ocaml-support";
     macro_benches_ref = "origin/master";
+    olly_dir = Filename.concat home "runtime_events_tools";
+    olly_ref = "origin/main";
+    dashboard_dir = Filename.concat home "ocaml-bench-dashboard";
+    dashboard_ref = "origin/main";
     helper = Filename.concat (Sys.getcwd ()) "scripts/rng_helper.py";
     max_active_per_user = 2;
+    explicit_base = false;
   }
 
 let die fmt = Printf.ksprintf (fun s -> prerr_endline s; exit 2) fmt
@@ -105,12 +117,17 @@ let parse_args argv =
       | "--secret-key" -> set (fun v -> { !o with secret_key = Some v })
       | "--resolver" -> set (fun v -> { !o with resolver = v })
       | "--base-url" -> set (fun v -> { !o with base_url = v })
-      | "--base-config" -> set (fun v -> { !o with base_config = v })
+      | "--base-config" ->
+        set (fun v -> { !o with base_config = v; explicit_base = true })
       | "--vocab" -> set (fun v -> { !o with vocab_file = v })
       | "--running-ng-src" -> set (fun v -> { !o with running_ng_src = v })
       | "--running-ng-dir" -> set (fun v -> { !o with running_ng_dir = v })
       | "--running-ng-ref" -> set (fun v -> { !o with running_ng_ref = v })
       | "--macro-benches-ref" -> set (fun v -> { !o with macro_benches_ref = v })
+      | "--olly-dir" -> set (fun v -> { !o with olly_dir = v })
+      | "--olly-ref" -> set (fun v -> { !o with olly_ref = v })
+      | "--dashboard-dir" -> set (fun v -> { !o with dashboard_dir = v })
+      | "--dashboard-ref" -> set (fun v -> { !o with dashboard_ref = v })
       | "--helper" -> set (fun v -> { !o with helper = v })
       | "--max-active-per-user" ->
         set (fun v -> { !o with max_active_per_user = int_of_string v })
@@ -120,17 +137,69 @@ let parse_args argv =
   go argv;
   !o
 
-let deps o =
+(* extract a running-ng tree at a pinned commit (the config AND the python
+   must come from the same sha the specs pin) *)
+let extract_tree ~dir ~commit ~dst =
+  let q = Filename.quote in
+  if Sys.command (Printf.sprintf "rm -rf %s && mkdir -p %s" (q dst) (q dst)) <> 0
+  then Error ("could not prepare " ^ dst)
+  else if
+    Sys.command
+      (Printf.sprintf "git -C %s archive %s | tar -x -C %s" (q dir) (q commit)
+         (q dst))
+    <> 0
+  then Error (Printf.sprintf "could not extract %s at %s" dir commit)
+  else Ok ()
+
+let base_in_tree dst =
+  Filename.concat dst "src/running/config/base/ocaml/macro_base.yml"
+
+let deps o ~on_bump =
   let service =
     match Service_config.of_file o.service_config with
     | Ok c -> c
     | Error e -> die "bad service config %s: %s" o.service_config e
   in
+  let macro_bench_dir =
+    match Service_config.default_machine service with
+    | Some m -> m.Service_config.macro_bench_dir
+    | None -> die "no machines registered"
+  in
+  (* The pins: seeded from these checkouts on first start, then changed only
+     by `bump` (+ restart).  Missing checkouts are skipped with a warning. *)
+  let pin_config =
+    [
+      (Api.Running_ng, o.running_ng_dir, o.running_ng_ref);
+      (Api.Macro_benches, macro_bench_dir, o.macro_benches_ref);
+      (Api.Olly, o.olly_dir, o.olly_ref);
+      (Api.Dashboard, o.dashboard_dir, o.dashboard_ref);
+    ]
+  in
+  let pins = Server.init_pins ~state_dir:o.state_dir ~pin_config in
+  let find_pin c =
+    List.find_opt (fun (p : Api.pin) -> p.Api.pinned_component = c) pins
+  in
+  (* base config + running-ng python follow the PIN, not the working copy;
+     --base-config overrides for hermetic runs (the live check). *)
+  let base_config, running_ng_src =
+    if o.explicit_base then (o.base_config, o.running_ng_src)
+    else
+      match find_pin Api.Running_ng with
+      | None ->
+        die
+          "no running-ng pin (is %s a checkout?) and no --base-config override"
+          o.running_ng_dir
+      | Some p -> (
+        let dst = Filename.concat o.state_dir "running-ng-src" in
+        match extract_tree ~dir:o.running_ng_dir ~commit:p.Api.commit ~dst with
+        | Error m -> die "%s" m
+        | Ok () -> (base_in_tree dst, Filename.concat dst "src"))
+  in
   let bridge =
-    Bridge.default_config ~helper:o.helper ~running_ng_src:o.running_ng_src ()
+    Bridge.default_config ~helper:o.helper ~running_ng_src ()
   in
   let facts =
-    match Bridge.facts bridge ~config:o.base_config with
+    match Bridge.facts bridge ~config:base_config with
     | Ok f -> f
     | Error e -> die "could not read base config facts: %s" e
   in
@@ -138,11 +207,6 @@ let deps o =
     match Vocab.of_file o.vocab_file with
     | Ok d -> d
     | Error e -> die "could not read %s: %s" o.vocab_file e
-  in
-  let macro_bench_dir =
-    match Service_config.default_machine service with
-    | Some m -> m.Service_config.macro_bench_dir
-    | None -> die "no machines registered"
   in
   let resolver =
     match o.resolver with
@@ -161,23 +225,65 @@ let deps o =
     Server.service;
     facts;
     sweepable;
-    base_include = o.base_config;
+    base_include = base_config;
     program_count =
       (fun ~tags ->
-        match Bridge.tagfilter bridge ~config:o.base_config ~tags with
+        match Bridge.tagfilter bridge ~config:base_config ~tags with
         | Ok n -> Ok n
         | Error errs -> Error (String.concat "; " errs));
     resolver;
+    (* per-run source snapshots come straight from the pins *)
     sources =
-      (let src name dir ref_ =
-         match Resolver.local_source ~name ~dir ~ref_ () with
-         | Ok s -> s
-         | Error e -> die "%s" e.Api.error_markdown
-       in
-       [
-         src "running-ng" o.running_ng_dir o.running_ng_ref;
-         src "macro-benches" macro_bench_dir o.macro_benches_ref;
-       ]);
+      List.filter_map
+        (fun (p : Api.pin) ->
+          match p.Api.pinned_component with
+          | Api.Dashboard -> None (* presentation, not a run input *)
+          | (Api.Running_ng | Api.Macro_benches | Api.Benches | Api.Olly) as c
+            ->
+            let dir =
+              match List.find_opt (fun (c', _, _) -> c' = c) pin_config with
+              | Some (_, d, _) -> d
+              | None -> "."
+            in
+            let repo =
+              match
+                Resolver.git_run ~git:"git"
+                  [ "-C"; dir; "remote"; "get-url"; "origin" ]
+              with
+              | Ok url when url <> "" -> url
+              | _ -> dir
+            in
+            Some
+              (Runspec.source ~name:(Api.string_of_component c) ~repo
+                 ~commit:p.Api.commit ()))
+        pins;
+    pin_config;
+    service_version =
+      (match
+         Resolver.git_run ~git:"git"
+           [ "-C"; Sys.getcwd (); "describe"; "--always"; "--dirty" ]
+       with
+      | Ok v -> v
+      | Error _ -> "unknown");
+    validate_pin =
+      (fun component ~commit ->
+        match component with
+        | Api.Running_ng -> (
+          (* dry-run the candidate: extract it and load facts through its own
+             python -- the drift class of failure surfaces HERE, not later *)
+          let dst = Filename.concat o.state_dir "pin-check" in
+          match extract_tree ~dir:o.running_ng_dir ~commit ~dst with
+          | Error m -> Error m
+          | Ok () -> (
+            let b =
+              Bridge.default_config ~helper:o.helper
+                ~running_ng_src:(Filename.concat dst "src") ()
+            in
+            match Bridge.facts b ~config:(base_in_tree dst) with
+            | Ok _ -> Ok ()
+            | Error m -> Error m))
+        | _ -> Ok ());
+    on_bump;
     state_dir = o.state_dir;
     base_url = o.base_url;
     max_active_per_user = o.max_active_per_user;
@@ -193,7 +299,8 @@ let () =
   Logs.set_level (Some Logs.Warning);
   Logs.set_reporter (Logs_fmt.reporter ());
   let o = parse_args (List.tl (Array.to_list Sys.argv)) in
-  let d = deps o in
+  let bump_requested = ref false in
+  let d = deps o ~on_bump:(fun () -> bump_requested := true) in
   mkdir_p o.state_dir;
   (* the webview snapshot survives restarts and backfills pre-webview runs *)
   Server.refresh_index d;
@@ -261,4 +368,17 @@ let () =
   Printf.printf "bench-serve: listening on %s (resolver: %s, queue: %s)\n%!"
     listen o.resolver
     (Filename.concat o.state_dir "runs");
-  Eio.Fiber.await_cancel ()
+  (* Adoption is a restart: after a bump, re-exec with the same argv (same
+     pid, tmux session survives, pins.json is re-read).  The delay lets the
+     bump reply flush to the client first. *)
+  let clock = Eio.Stdenv.clock env in
+  let rec watch () =
+    Eio.Time.sleep clock 0.5;
+    if !bump_requested then begin
+      Eio.Time.sleep clock 1.5;
+      Printf.printf "bench-serve: pins changed; restarting to adopt\n%!";
+      Unix.execv Sys.executable_name Sys.argv
+    end
+    else watch ()
+  in
+  watch ()

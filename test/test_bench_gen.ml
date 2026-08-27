@@ -966,6 +966,131 @@ let test_github_resolver () =
   | Ok _ -> fail "PR + vs=: expected at least two variants"
   | Error e -> fail "PR + vs=: %s" (markdown e)
 
+(* --- 5c. version pins (versions / bump) ------------------------------------ *)
+
+let test_pins () =
+  let root =
+    Filename.concat
+      (Filename.get_temp_dir_name ())
+      (Printf.sprintf "bench-pins-test-%d" (Unix.getpid ()))
+  in
+  let repo = Filename.concat root "component" in
+  let sh fmt =
+    Printf.ksprintf
+      (fun c -> if Sys.command (c ^ " >/dev/null 2>&1") <> 0 then failwith c)
+      fmt
+  in
+  let git fmt =
+    Printf.ksprintf
+      (fun args ->
+        sh "git -C %s -c user.email=t@t -c user.name=t %s"
+          (Filename.quote repo) args)
+      fmt
+  in
+  sh "mkdir -p %s" (Filename.quote repo);
+  git "init -q -b trunk .";
+  git "commit -q --allow-empty -m one";
+  let sha_a =
+    run_out (Printf.sprintf "git -C %s rev-parse HEAD" (Filename.quote repo))
+  in
+  git "commit -q --allow-empty -m two";
+  let sha_b =
+    run_out (Printf.sprintf "git -C %s rev-parse HEAD" (Filename.quote repo))
+  in
+  let state_dir = Filename.concat root "state" in
+  let pin_config = [ (Api.Running_ng, repo, "trunk") ] in
+
+  (* seeding happens once; afterwards only bump changes pins *)
+  (match Server.init_pins ~state_dir ~pin_config with
+  | [ p ] ->
+    check_true ~name:"seed pins the tracked ref's tip" (p.Api.commit = sha_b);
+    check_eq ~name:"seed records the track" ~expected:"trunk"
+      ~actual:p.Api.track;
+    check_eq ~name:"seed is attributed" ~expected:"seed" ~actual:p.Api.bumped_by
+  | _ -> fail "expected exactly one seeded pin");
+  git "commit -q --allow-empty -m three";
+  let sha_c =
+    run_out (Printf.sprintf "git -C %s rev-parse HEAD" (Filename.quote repo))
+  in
+  (match Server.init_pins ~state_dir ~pin_config with
+  | [ p ] ->
+    check_true ~name:"restart never silently re-pins" (p.Api.commit = sha_b)
+  | _ -> fail "expected the stored pin");
+
+  let bumped = ref 0 in
+  let d =
+    {
+      Server.service = service_config;
+      facts;
+      sweepable;
+      base_include = "/base/macro_base.yml";
+      program_count = (fun ~tags:_ -> Ok 20);
+      resolver = Resolver.offline;
+      sources = [];
+      pin_config;
+      service_version = "test-build";
+      validate_pin = (fun _ ~commit:_ -> Ok ());
+      on_bump = (fun () -> incr bumped);
+      state_dir;
+      base_url = "http://bench.test";
+      max_active_per_user = 2;
+    }
+  in
+  let user = { Api.login = "udesou"; role = Api.User } in
+  let admin = { Api.login = "admin-person"; role = Api.User } in
+
+  (* versions and bump are admin-only *)
+  (match Server.versions d user with
+  | Error e ->
+    check_true ~name:"versions is admin-only" (e.Api.code = Api.Forbidden)
+  | Ok _ -> fail "a user should not read versions");
+  (match Server.bump d user ~component:Api.Running_ng () with
+  | Error e -> check_true ~name:"bump is admin-only" (e.Api.code = Api.Forbidden)
+  | Ok _ -> fail "a user should not bump");
+
+  (* bare bump = re-resolve the track (which has moved to C) *)
+  (match Server.bump d admin ~component:Api.Running_ng () with
+  | Ok p ->
+    check_true ~name:"bare bump adopts the track's new tip"
+      (p.Api.commit = sha_c);
+    check_eq ~name:"bump is attributed" ~expected:"admin-person"
+      ~actual:p.Api.bumped_by;
+    check_true ~name:"bump fires the adoption hook" (!bumped = 1)
+  | Error e -> fail "bare bump: %s" (markdown e));
+  (* explicit bump to a sha *)
+  (match Server.bump d admin ~component:Api.Running_ng ~to_:sha_a () with
+  | Ok p -> check_true ~name:"explicit bump pins the sha" (p.Api.commit = sha_a)
+  | Error e -> fail "explicit bump: %s" (markdown e));
+  (match Server.versions d admin with
+  | Ok v ->
+    check_eq ~name:"versions reports the service build" ~expected:"test-build"
+      ~actual:v.Api.service;
+    check_true ~name:"versions reflects the last bump"
+      (match v.Api.pins with [ p ] -> p.Api.commit = sha_a | _ -> false)
+  | Error e -> fail "versions: %s" (markdown e));
+
+  (* refusals: unresolvable target, failing validation, unconfigured component *)
+  (match Server.bump d admin ~component:Api.Running_ng ~to_:"nonsense" () with
+  | Error e ->
+    check_true ~name:"unresolvable target refused" (e.Api.code = Api.Bad_command)
+  | Ok _ -> fail "nonsense target should be refused");
+  let d_bad = { d with Server.validate_pin = (fun _ ~commit:_ -> Error "probe failed") } in
+  (match Server.bump d_bad admin ~component:Api.Running_ng ~to_:sha_b () with
+  | Error e ->
+    check_contains ~name:"failed validation refuses the bump"
+      ~needle:"Nothing was changed" (markdown e);
+    check_true ~name:"a refused bump leaves pins alone"
+      (match Server.versions d admin with
+      | Ok v -> (
+        match v.Api.pins with [ p ] -> p.Api.commit = sha_a | _ -> false)
+      | Error _ -> false)
+  | Ok _ -> fail "failing validation should refuse the bump");
+  match Server.bump d admin ~component:Api.Dashboard () with
+  | Error e ->
+    check_contains ~name:"unconfigured component refused"
+      ~needle:"no checkout configured" (markdown e)
+  | Ok _ -> fail "dashboard has no checkout here and should be refused"
+
 (* --- 6. the request server (lib/server.ml) -------------------------------- *)
 
 (* The server over injected deps: fixture facts, a fake tag filter, the
@@ -995,6 +1120,10 @@ let test_server () =
             ~repo:"https://github.com/ocaml-bench/macro-benches"
             ~commit:"2222222222222222222222222222222222222222" ();
         ];
+      pin_config = [];
+      service_version = "test";
+      validate_pin = (fun _ ~commit:_ -> Ok ());
+      on_bump = ignore;
       state_dir;
       base_url = "http://bench.test";
       max_active_per_user = 2;
@@ -1251,6 +1380,7 @@ let () =
   test_authz ();
   test_admin_keys ();
   test_github_resolver ();
+  test_pins ();
   test_server ();
   test_help ();
   ok "done";

@@ -29,6 +29,9 @@ interface BenchApi {
   requeue  @10 (runId :Text);
   # runtimeName "" evicts every cache on the machine
   evict    @11 (machine :Text, runtimeName :Text) -> (bytes :Int64);
+  versions @12 () -> (versionsJson :Text);
+  # target "" = bare bump: re-resolve the pin's tracked ref
+  bump     @13 (component :Text, target :Text) -> (pinJson :Text);
 }
 
 # Held only by the PR bot (trusted infrastructure): the same submit, asserting

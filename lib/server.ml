@@ -36,7 +36,16 @@ type deps = {
       (** running-ng's own tag filter, via the bridge; injectable for tests *)
   resolver : Resolver.t;
   sources : Runspec.source list;
-      (** repos pinned to shas (Resolver.local_source) for the run spec *)
+      (** per-run source snapshots, derived from the pins at startup *)
+  pin_config : (Api.component * string * string) list;
+      (** component -> (local checkout dir, tracked ref); what seed and
+          bare-bump resolve against *)
+  service_version : string;  (** the server's own build, for `versions` *)
+  validate_pin : Api.component -> commit:string -> (unit, string) result;
+      (** dry-run a candidate pin before adoption (e.g. running-ng: extract
+          and load facts); injectable, noop in tests *)
+  on_bump : unit -> unit;
+      (** the daemon's adoption hook (re-exec); noop in tests *)
   state_dir : string;
   base_url : string;  (** links in acknowledgements point under here *)
   max_active_per_user : int;  (** queued+running cap per user (Q10) *)
@@ -145,6 +154,79 @@ let fresh_run_id deps =
     if Sys.file_exists (run_dir deps id) then go (n + 1) else id
   in
   go 1
+
+(* --- version pins (§6.3): the server's control file ------------------------- *)
+
+let pins_file ~state_dir = Filename.concat state_dir "pins.json"
+
+let read_pins_at ~state_dir =
+  match read_json (pins_file ~state_dir) with
+  | Some j -> (
+    match member "pins" j with
+    | `List l ->
+      List.filter_map (fun p -> Result.to_option (Api.pin_of_json p)) l
+    | _ -> [])
+  | None -> []
+
+let write_pins_at ~state_dir pins =
+  mkdir_p state_dir;
+  write_json (pins_file ~state_dir)
+    (`Assoc [ ("pins", `List (List.map Api.json_of_pin pins)) ])
+
+let read_pins deps = read_pins_at ~state_dir:deps.state_dir
+let write_pins deps pins = write_pins_at ~state_dir:deps.state_dir pins
+
+let looks_like_version v =
+  let v =
+    if String.length v > 0 && (v.[0] = 'v' || v.[0] = 'V') then
+      String.sub v 1 (String.length v - 1)
+    else v
+  in
+  match Util.split_on ~sep:'.' v with
+  | x :: y :: _ -> Util.is_int x && Util.is_int y
+  | _ -> false
+
+(* The declared X.Y.Z of a pinned commit: a VERSION file when the component
+   ships one (the dashboard), else the target when it names a version tag. *)
+let pin_version ~dir ~commit ~target =
+  match
+    Resolver.git_run ~git:"git" [ "-C"; dir; "show"; commit ^ ":VERSION" ]
+  with
+  | Ok v when String.trim v <> "" -> Some (String.trim v)
+  | _ -> if looks_like_version target then Some target else None
+
+(* Seed pins.json on first start from the configured checkouts; afterwards
+   pins change only through `bump` -- a restart never silently re-pins. *)
+let init_pins ~state_dir ~pin_config =
+  match read_pins_at ~state_dir with
+  | _ :: _ as pins -> pins
+  | [] ->
+    let now = iso_now () in
+    let pins =
+      List.filter_map
+        (fun (component, dir, track) ->
+          match
+            Resolver.git_run ~git:"git" [ "-C"; dir; "rev-parse"; track ]
+          with
+          | Error out ->
+            Printf.eprintf "pins: skipping %s (%s: %s)\n%!"
+              (Api.string_of_component component)
+              dir out;
+            None
+          | Ok commit ->
+            Some
+              {
+                Api.pinned_component = component;
+                track;
+                commit;
+                version = pin_version ~dir ~commit ~target:track;
+                bumped_at = now;
+                bumped_by = "seed";
+              })
+        pin_config
+    in
+    write_pins_at ~state_dir pins;
+    pins
 
 let drained_machines deps =
   match read_json (machines_file deps) with
@@ -612,6 +694,71 @@ let evict deps (auth0 : Api.auth) ~machine (_ : Api.cache_selector) =
   err Api.Bad_command
     "No agent is connected to `%s` yet; there are no caches to evict." machine
 
+let versions deps (auth0 : Api.auth) =
+  let* auth = effective_auth deps auth0 in
+  let* () = require_admin auth in
+  Ok
+    {
+      Api.service = deps.service_version;
+      pins = read_pins deps;
+      machines = [] (* agent-reported, once agents exist *);
+    }
+
+(* Adopt a new version of a component (§6.3): validate before adopting, write
+   pins.json, fire the daemon's adoption hook.  Queued specs are untouched by
+   construction -- they snapshotted the pins at submission. *)
+let bump deps (auth0 : Api.auth) ~component ?to_ () =
+  let* auth = effective_auth deps auth0 in
+  let* () = require_admin auth in
+  match
+    List.find_opt (fun (c, _, _) -> c = component) deps.pin_config
+  with
+  | None ->
+    err Api.Bad_command
+      "This server has no checkout configured for `%s`, so it cannot be        bumped here."
+      (Api.string_of_component component)
+  | Some (_, dir, track) -> (
+    let target = Option.value to_ ~default:track in
+    (* fetch first so adopting upstream movement is one command; best effort
+       (a purely local target still resolves) *)
+    ignore
+      (Resolver.git_run ~git:"git" [ "-C"; dir; "fetch"; "--quiet"; "origin" ]);
+    match
+      Resolver.git_run ~git:"git"
+        [ "-C"; dir; "rev-parse"; target ^ "^{commit}" ]
+    with
+    | Error out ->
+      err Api.Bad_command
+        "`%s` does not resolve in the server's `%s` checkout: %s" target
+        (Api.string_of_component component)
+        out
+    | Ok commit -> (
+      match deps.validate_pin component ~commit with
+      | Error why ->
+        err Api.Bad_command
+          "Refusing to bump `%s` to `%s`: %s. Nothing was changed."
+          (Api.string_of_component component)
+          target why
+      | Ok () ->
+        let pin =
+          {
+            Api.pinned_component = component;
+            track;
+            commit;
+            version = pin_version ~dir ~commit ~target;
+            bumped_at = iso_now ();
+            bumped_by = auth.Api.login;
+          }
+        in
+        let others =
+          List.filter
+            (fun (p : Api.pin) -> p.Api.pinned_component <> component)
+            (read_pins deps)
+        in
+        write_pins deps (others @ [ pin ]);
+        deps.on_bump ();
+        Ok pin))
+
 (* The whole thing as the document's module, proving the signature is
    implementable as specified. *)
 let request_api deps : (module Api.REQUEST_API) =
@@ -623,9 +770,11 @@ let request_api deps : (module Api.REQUEST_API) =
     let list a f p = list deps a f p
     let help () = help deps ()
     let vocab () = vocab deps ()
+    let versions a = versions deps a
     let machines a = machines deps a
     let drain a ~machine = drain deps a ~machine
     let undrain a ~machine = undrain deps a ~machine
     let requeue a ~run_id = requeue deps a ~run_id
     let evict a ~machine sel = evict deps a ~machine sel
+    let bump a ~component ?to_ () = bump deps a ~component ?to_ ()
   end)

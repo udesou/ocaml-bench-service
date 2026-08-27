@@ -127,6 +127,12 @@ document is required reading.
   of a *completed* run is the run key's job (§8.1), which nothing computes yet.
   Widening the duplicate check to finished runs would make rerunning a command
   impossible.
+- **Pins are the server's control file** (`<state>/pins.json`): seeded once
+  from the configured checkouts, changed ONLY by the admin `bump` op (which
+  validates the candidate first -- for running-ng it extracts and loads facts
+  -- then writes pins and self-restarts to adopt). A restart never silently
+  re-pins. Every run spec snapshots the pins at submission, so bumps affect
+  future runs only. `versions` (admin) shows service build + pins.
 - **Non-run commands are `Answered` outcomes (Q18).** `/bench help` and
   `/bench cancel <id>` through `submit` make the server act and reply with
   postable markdown; requesters never pre-parse (the grammar lives in the
