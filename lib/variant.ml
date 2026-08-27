@@ -14,13 +14,12 @@ type t = {
   spec : spec;
   role : role;
   configure_args : string;
-      (* e.g. "--enable-flambda" (§5.3 runtime_pin).  Part of the run's
-         identity and of switch provenance, but NOT of the runtime name: the
-         name encodes only the sha, and the runner's provenance record is what
-         distinguishes two builds of the same sha.  Question raised on the
-         document: no grammar key produces this yet, and how it reaches
-         running-ng's provisioning is unspecified -- so it travels in the run
-         spec and stays out of the generated config. *)
+      (* e.g. "--enable-flambda --enable-frame-pointers" (§5.3 runtime_pin),
+         whitespace-separated.  Part of the requested build identity: it goes
+         into the runtime NAME (as a digest, see runtime_name) and into the
+         generated config's `configure_args:` list, which running-ng passes to
+         `opam compiler create --configure-command`.  No grammar key produces
+         it yet (a raised doc question); the CLI's --variant 4th field does. *)
 }
 
 let sha_short sha =
@@ -28,24 +27,33 @@ let sha_short sha =
   if n <= 7 then sha else String.sub sha 0 7
 
 (* The runtime name is the compiler cache key: running-ng provisions the switch
-   `running-ng-<runtime name>` and treats it as the cache.  Encoding the sha
-   here is what makes a second request against the same commit reuse the switch
-   instead of rebuilding for 10-20 minutes.
+   `running-ng-<runtime name>` and treats it as the cache -- and, per its own
+   comment, TRUSTS the config author to make names unique per distinct build.
+   The server is the config author, so the name must be an injective function
+   of the requested identity: (compiler sha-or-version, configure_args).  The
+   sha keeps same-commit requests sharing one switch; the args digest keeps
+   two configurations of one commit from thrashing each other's.
 
-   The sha alone is NOT sufficient to justify reuse: nothing in a switch records
-   what built it, so the same commit under different configure_args, a different
-   pinned dune, or a shifted opam repo gives a differently-built compiler under
-   the same name.  The runner records that provenance separately and reuses only
-   on an exact match. *)
+   Environmental build inputs (running-ng's pinned dune, the opam repo state)
+   are deliberately NOT in the name: nobody can request them, they just drift
+   underneath it -- the agent's switch-provenance sidecar catches that and
+   rebuilds in place (§6.3). *)
+let args_slug args = "c" ^ String.sub (Digest.to_hex (Digest.string args)) 0 6
+
 let runtime_name t =
   let label = Util.sanitize t.label in
-  match t.spec with
-  | Version v ->
-    let v = Util.sanitize v in
-    if label = "" || label = v then "ocaml-" ^ v else "ocaml-" ^ label ^ "-" ^ v
-  | Commit sha ->
-    let s = Util.sanitize (sha_short sha) in
-    if label = "" then "ocaml-" ^ s else "ocaml-" ^ label ^ "-" ^ s
+  let base =
+    match t.spec with
+    | Version v ->
+      let v = Util.sanitize v in
+      if label = "" || label = v then "ocaml-" ^ v
+      else "ocaml-" ^ label ^ "-" ^ v
+    | Commit sha ->
+      let s = Util.sanitize (sha_short sha) in
+      if label = "" then "ocaml-" ^ s else "ocaml-" ^ label ^ "-" ^ s
+  in
+  if t.configure_args = "" then base
+  else base ^ "-" ^ args_slug t.configure_args
 
 let is_hex s =
   s <> ""

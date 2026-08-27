@@ -372,7 +372,14 @@ let generate ~ctx ~(request : Request.t) ~(facts : Facts.t) ~sweepable ~variants
       List.iter
         (fun (k, value) ->
           Buffer.add_string b (Printf.sprintf "    %s: %s\n" k (quote value)))
-        (Variant.yaml_fields v))
+        (Variant.yaml_fields v);
+      (* running-ng passes this list to `opam compiler create
+         --configure-command "./configure <args>"`. *)
+      if v.Variant.configure_args <> "" then
+        Buffer.add_string b
+          (Printf.sprintf "    configure_args: %s\n"
+             (flow_list
+                (List.map quote (Util.tokens v.Variant.configure_args)))))
     variants;
   Buffer.add_char b '\n';
 

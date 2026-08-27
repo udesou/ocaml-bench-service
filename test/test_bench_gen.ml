@@ -475,8 +475,35 @@ let test_variant_naming () =
   (match Variant.of_cli_string "commit:fp:c0f8c8ceef751fb3a99652d3d52399db3d1c2aae:--enable-frame-pointers" with
   | Ok v ->
     check_eq ~name:"configure args parsed"
-      ~expected:"--enable-frame-pointers" ~actual:v.configure_args
+      ~expected:"--enable-frame-pointers" ~actual:v.configure_args;
+    (* The name is the compiler cache key and must be injective in
+       (sha, configure_args): running-ng trusts the config author -- us --
+       for uniqueness, so two configurations of one commit must not share a
+       switch. *)
+    check_eq ~name:"configure args enter the runtime name"
+      ~expected:("ocaml-fp-c0f8c8c-" ^ Variant.args_slug "--enable-frame-pointers")
+      ~actual:(Variant.runtime_name v);
+    check_true ~name:"different args, different name"
+      (Variant.runtime_name v
+      <> Variant.runtime_name { v with configure_args = "--enable-flambda" })
   | Error e -> fail "configure args variant rejected: %s" e);
+  (* The generated config carries the list running-ng feeds to
+     `opam compiler create --configure-command`. *)
+  (let fp =
+     {
+       head_v with
+       label = "fp";
+       configure_args = "--enable-frame-pointers --enable-flambda";
+     }
+   in
+   match gen ~variants:[ base_v; fp ] "/bench" with
+   | Error e -> fail "fp generation: %s" (markdown e)
+   | Ok spec ->
+     check_contains ~name:"config emits configure_args as a list"
+       ~needle:
+         "    configure_args: [\"--enable-frame-pointers\", \
+          \"--enable-flambda\"]"
+       spec.config_yaml);
   match Variant.of_cli_string "version:base:5.5.0" with
   | Ok v -> check_eq ~name:"configure args default empty" ~expected:"" ~actual:v.configure_args
   | Error e -> fail "plain variant rejected: %s" e

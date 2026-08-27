@@ -139,6 +139,21 @@ check        "sweep s and o"          "/bench invocations=1 sweep=s:262144,52428
 check        "tag=all forced"         "/bench tag=all invocations=1 force=true"
 check_single "single runtime"         "/bench invocations=1"
 
+# configure_args must pass running-ng's own validate(): the list feeds
+# `opam compiler create --configure-command`.
+n=$((n + 1))
+out=$(run spec --comment "/bench invocations=1" --base-config "$BASE" --vocab "$VOCAB" \
+        "${SRC_ARGS[@]}" --variant "$BASE_V" \
+        --variant "commit:fp:c0f8c8ceef751fb3a99652d3d52399db3d1c2aae:--enable-frame-pointers" \
+        --request-id "live-$n" --out "$OUT" --check 2>&1)
+if grep -q '^# validate(): OK' <<<"$out"; then
+  echo "  ok    configure_args variant"
+else
+  echo "  FAIL  configure_args variant"
+  sed 's/^/          /' <<<"$out" | tail -8
+  fails=$((fails + 1))
+fi
+
 echo
 echo "refusals:"
 check_rejects "unknown tag"     "/bench tag=nosuchtag"      "Unknown benchmark set"
