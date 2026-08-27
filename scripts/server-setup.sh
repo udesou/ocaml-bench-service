@@ -32,18 +32,34 @@ python3 -c 'import yaml' 2>/dev/null \
 
 clone() {
   local dir="$1" url="$2"
-  if [ -d "$dir/.git" ]; then
+  if git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
     git -C "$dir" fetch origin --quiet && echo "fetched   $dir"
   else
     git clone --quiet "$url" "$dir" && echo "cloned    $dir"
   fi
 }
+# The server only needs GIT METADATA from these two (rev-parse for pins,
+# archive/fetch for bump), so a bare clone with normal remote-tracking refs
+# suffices.  A BENCH machine needs real working trees -- that is the agent's
+# setup, not this one.  (An existing full clone is left as it is.)
+clone_bare() {
+  local dir="$1" url="$2"
+  if git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+    git -C "$dir" fetch origin --quiet && echo "fetched   $dir"
+  else
+    git clone --quiet --bare "$url" "$dir"
+    git -C "$dir" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+    git -C "$dir" fetch origin --quiet
+    echo "cloned    $dir (bare)"
+  fi
+}
+# full: the daemon extracts running-ng's tree from its pin, and dev flows
+# (make live, bench-gen) read it; the dashboard checkout serves vocab.json
 clone "${RUNNING_NG_REPO:-$HOME/running-ng}" https://github.com/udesou/running-ng
 clone "${DASHBOARD_REPO:-$HOME/ocaml-bench-dashboard}" https://github.com/udesou/ocaml-bench-dashboard
-# the server pins macro-benches and olly to shas per run spec, so it needs
-# the checkouts
-clone "${MACRO_BENCHES_REPO:-$HOME/macro-benches}" https://github.com/ocaml-bench/macro-benches
-clone "${OLLY_REPO:-$HOME/runtime_events_tools}" https://github.com/tarides/runtime_events_tools
+# metadata-only on a server host: pinned into specs, never built here
+clone_bare "${MACRO_BENCHES_REPO:-$HOME/macro-benches}" https://github.com/ocaml-bench/macro-benches
+clone_bare "${OLLY_REPO:-$HOME/runtime_events_tools}" https://github.com/tarides/runtime_events_tools
 
 cd "$ROOT"
 [ -d _opam ] || make switch

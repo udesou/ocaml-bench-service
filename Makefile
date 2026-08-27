@@ -33,9 +33,13 @@ VOCAB           ?= $(HOME)/ocaml-bench-dashboard/schema/json/vocab.json
 all: build
 
 ## switch: create the local ./_opam switch and install dependencies
+# --repositories=default pins the switch to the stock opam repo: machines
+# that run running-ng accumulate overlay repos (relocatable, oxcaml) in the
+# opam root, and if one sits in the root's default selection a plain switch
+# create silently builds a patched compiler.  Bitten on two machines.
 switch: check-idle
 	$(OPAM) switch create $(SWITCH) ocaml-base-compiler.$(OCAML_VERSION) \
-	  --no-install --yes
+	  --repositories=default --no-install --yes
 	$(MAKE) deps
 
 ## deps: install/refresh dependencies into the local switch
