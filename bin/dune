@@ -4,7 +4,7 @@
  (libraries bench_service yojson))
 
 (executables
- (names bench_cli bench_serve)
- (modules bench_cli bench_serve)
+ (names bench_cli bench_serve bench_agent)
+ (modules bench_cli bench_serve bench_agent)
  (libraries bench_service bench_rpc yojson capnp-rpc-unix eio_main
    mirage-crypto-rng.unix logs.fmt))

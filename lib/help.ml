@@ -41,7 +41,7 @@ let render ~(facts : Facts.t) ~sweepable ~machines ~cap_seconds ~default_machine
   List.iter
     (fun (alias, (t : Facts.tag)) ->
       add "| `%s` | %d | %s |\n" alias t.programs
-        (if alias = "default" then "one rung per tool — the default"
+        (if alias = "default" then "one rung per tool -- the default"
          else if t.gap then "_no benchmarks yet_"
          else ""))
     sets;
@@ -58,13 +58,13 @@ let render ~(facts : Facts.t) ~sweepable ~machines ~cap_seconds ~default_machine
     "\nSemicolons separate parameters, commas separate values. Every value is \
      another config crossed with every runtime, so sweeps get expensive fast.\n\n";
 
-  add "**Invocations** — %d by default, %d at most. Each invocation re-runs every\n"
+  add "**Invocations** -- %d by default, %d at most. Each invocation re-runs every\n"
     Request.default_invocations Request.max_invocations;
   add "benchmark on every runtime in a fresh process; base and candidate are\n";
   add "interleaved so machine drift cancels out.\n\n";
 
   add
-    "**Cost limit** — a request estimated over %s is refused; the estimate is \
+    "**Cost limit** -- a request estimated over %s is refused; the estimate is \
      shown when a run is accepted. `force=true` (run anyway) and `priority=top` \
      (jump the queue) are admin-only.\n\n"
     (Cost.human cap_seconds);
@@ -72,7 +72,7 @@ let render ~(facts : Facts.t) ~sweepable ~machines ~cap_seconds ~default_machine
   (match machines with
   | [] | [ _ ] -> ()
   | ms ->
-    add "**Machines** — `machine=` selects one of: %s (default `%s`).\n\n"
+    add "**Machines** -- `machine=` selects one of: %s (default `%s`).\n\n"
       (String.concat ", " (List.map (fun m -> "`" ^ m ^ "`") ms))
       default_machine);
 

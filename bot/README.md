@@ -2,7 +2,7 @@
 
 Turns `/bench` comments on the fork's pull requests into API A submissions
 and posts the server's markdown back. It is deliberately a *thin* client
-(Q13): no grammar, no rendering, no policy — the allowlist decision, the
+(Q13): no grammar, no rendering, no policy -- the allowlist decision, the
 resolution of the PR head and merge base, and every message all come from the
 server. Two interchangeable delivery mechanisms, same behaviour:
 
@@ -21,13 +21,13 @@ bot/poll.sh <owner/repo> [interval-seconds]     # e.g. bot/poll.sh udesou/ocaml 
 Polls the fork's issue comments (only ones created after startup), submits
 each `/bench …` through `bot.cap` asserting the commenter, and posts the
 reply with `gh`'s logged-in account. Handled comment ids live in
-`<state>/bot-seen`, so restarts never double-post — and the server's
+`<state>/bot-seen`, so restarts never double-post -- and the server's
 idempotency key backstops even that. An unlisted commenter gets the polite
 allowlist refusal, posted publicly, which is the intended behaviour.
 
 ## Action-mode setup
 
-1. **Run the server somewhere GitHub's runners can reach** (Q3 — host still
+1. **Run the server somewhere GitHub's runners can reach** (Q3 -- host still
    to be decided):
 
    ```sh
@@ -40,13 +40,13 @@ allowlist refusal, posted publicly, which is the intended behaviour.
    so set it before distributing them.
 
 2. **Give the fork the bot capability**: repository secret `BENCH_BOT_CAP` =
-   `base64 -w0 bot.cap`. This file *is* the bot's access — treat it like a
+   `base64 -w0 bot.cap`. This file *is* the bot's access -- treat it like a
    token. It only lets the holder submit-as-commenter; the commenter must
    still be on the server's allowlist.
 
 3. **Host a prebuilt `bench-cli`**: `dune build bin/bench_cli.exe`, upload the
    binary (e.g. as a release asset of this repository), and set the repository
-   variable `BENCH_CLI_URL` to its URL. The Action downloads it per run — a
+   variable `BENCH_CLI_URL` to its URL. The Action downloads it per run -- a
    capnp client can't be curl (Q15), so the binary stands in.
 
 4. **Copy `bench.yml` into the fork** as `.github/workflows/bench.yml`.
@@ -60,7 +60,7 @@ merge base itself (`pr_context` in the architecture document, §5.3).
 
 ## v1 reporting
 
-One reply comment per `/bench` command, carrying whatever the server said —
+One reply comment per `/bench` command, carrying whatever the server said --
 acknowledgement with links, "these results already exist", help text, or a
 refusal. The **final** comment (summary when the run completes) needs the run
 execution side (API B) and is not wired yet; `bench-cli status <run-id>`

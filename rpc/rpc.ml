@@ -310,6 +310,114 @@ let bench_bot deps =
            Capnp_rpc.Service.return response)
      end
 
+(* One machine's agent capability (§6.2): bound to a machine name the way a
+   BenchApi is bound to a login.  Holding it is being that machine's agent. *)
+let agent_api deps ~machine =
+  let module A = Api_rpc.Service.AgentApi in
+  let text_result init set v =
+    let response, results = Capnp_rpc.Service.Response.create init in
+    set results v;
+    Capnp_rpc.Service.return response
+  in
+  let unit_result = function
+    | Ok () -> Capnp_rpc.Service.return_empty ()
+    | Error e -> fail_api e
+  in
+  let exec_id params run_id_get execution_get =
+    {
+      Api.run_id = run_id_get params;
+      execution = Int32.to_int (execution_get params);
+    }
+  in
+  A.local
+  @@ object
+       inherit A.service
+
+       method claim_impl _params release_param_caps =
+         let open A.Claim in
+         release_param_caps ();
+         (match Server.claim deps ~machine with
+         | Error e -> fail_api e
+         | Ok None ->
+           text_result Results.init_pointer Results.assignment_json_set ""
+         | Ok (Some a) ->
+           text_result Results.init_pointer Results.assignment_json_set
+             (Yojson.Safe.to_string (Api.json_of_assignment a)))
+
+       method heartbeat_impl params release_param_caps =
+         let open A.Heartbeat in
+         let id = exec_id params Params.run_id_get Params.execution_get in
+         let phase =
+           Option.value
+             (Api.execution_phase_of_string (Params.phase_get params))
+             ~default:Api.Preparing
+         in
+         release_param_caps ();
+         (match Server.heartbeat deps ~machine id phase with
+         | Error e -> fail_api e
+         | Ok order ->
+           text_result Results.init_pointer Results.order_set
+             (match order with `Continue -> "continue" | `Cancel -> "cancel"))
+
+       method post_events_impl params release_param_caps =
+         let open A.PostEvents in
+         let id = exec_id params Params.run_id_get Params.execution_get in
+         let events_json = Params.events_json_get params in
+         release_param_caps ();
+         (match Yojson.Safe.from_string events_json with
+         | exception _ -> fail_api (bad "events payload is not JSON")
+         | `List l -> (
+           let events =
+             List.filter_map
+               (fun j -> Result.to_option (Api.event_of_wire ~id j))
+               l
+           in
+           unit_result (Server.post_events deps ~machine id events))
+         | _ -> fail_api (bad "events payload must be a JSON list"))
+
+       method upload_impl params release_param_caps =
+         let open A.Upload in
+         let id = exec_id params Params.run_id_get Params.execution_get in
+         let artifact =
+           { Api.path = Params.path_get params;
+             content = Params.content_get params }
+         in
+         release_param_caps ();
+         unit_result (Server.upload deps ~machine id artifact)
+
+       method finish_impl params release_param_caps =
+         let open A.Finish in
+         let id = exec_id params Params.run_id_get Params.execution_get in
+         let result_json = Params.result_json_get params in
+         release_param_caps ();
+         (match Yojson.Safe.from_string result_json with
+         | exception _ -> fail_api (bad "result payload is not JSON")
+         | j -> (
+           match Api.execution_result_of_json j with
+           | Error m -> fail_api (bad "%s" m)
+           | Ok r -> unit_result (Server.finish deps ~machine id r)))
+
+       method report_caches_impl params release_param_caps =
+         let open A.ReportCaches in
+         let caches_json = Params.caches_json_get params in
+         release_param_caps ();
+         (match Yojson.Safe.from_string caches_json with
+         | exception _ -> fail_api (bad "caches payload is not JSON")
+         | `List l -> (
+           let entries, errors =
+             List.partition_map
+               (fun j ->
+                 match Api.cache_entry_of_json j with
+                 | Ok c -> Either.Left c
+                 | Error m -> Either.Right m)
+               l
+           in
+           match errors with
+           | e :: _ -> fail_api (bad "%s" e)
+           | [] -> unit_result (Server.report_caches deps ~machine entries))
+         | _ -> fail_api (bad "caches payload must be a JSON list"))
+     end
+
 (* --- typed client calls ------------------------------------------------------ *)
 
 module Client = struct
@@ -438,6 +546,95 @@ module Client = struct
     Params.machine_set params machine;
     Params.runtime_name_set params (Option.value runtime_name ~default:"");
     call t method_id request Results.bytes_get
+end
+
+(* The agent's side of the wire: typed calls returning API types, so the
+   agent binary never touches JSON for anything the API defines. *)
+module Agent_client = struct
+  module A = Api_rpc.Client.AgentApi
+
+  type t = A.t Capnp_rpc.Capability.t
+
+  let call cap method_id request read =
+    match Capnp_rpc.Capability.call_for_value cap method_id request with
+    | Ok results -> Ok (read results)
+    | Error e -> Error (error_of_rpc e)
+
+  let set_exec_id params run_id_set execution_set (id : Api.execution_id) =
+    run_id_set params id.Api.run_id;
+    execution_set params (Int32.of_int id.Api.execution)
+
+  let claim t =
+    let open A.Claim in
+    let request, _ = Capnp_rpc.Capability.Request.create Params.init_pointer in
+    match call t method_id request Results.assignment_json_get with
+    | Error e -> Error e
+    | Ok "" -> Ok None
+    | Ok s -> (
+      match Yojson.Safe.from_string s with
+      | exception _ -> Error (transport "assignment is not JSON")
+      | j -> (
+        match Api.assignment_of_json j with
+        | Ok a -> Ok (Some a)
+        | Error m -> Error (transport "%s" m)))
+
+  let heartbeat t ~id ~phase =
+    let open A.Heartbeat in
+    let request, params =
+      Capnp_rpc.Capability.Request.create Params.init_pointer
+    in
+    set_exec_id params Params.run_id_set Params.execution_set id;
+    Params.phase_set params (Api.string_of_execution_phase phase);
+    match call t method_id request Results.order_get with
+    | Error e -> Error e
+    | Ok "cancel" -> Ok `Cancel
+    | Ok _ -> Ok `Continue
+
+  let post_events t ~id events =
+    let open A.PostEvents in
+    let request, params =
+      Capnp_rpc.Capability.Request.create Params.init_pointer
+    in
+    set_exec_id params Params.run_id_set Params.execution_set id;
+    Params.events_json_set params
+      (Yojson.Safe.to_string
+         (`List
+           (List.map
+              (fun (e : Api.event) ->
+                `Assoc
+                  [ ("seq", `Int e.Api.seq); ("ts", `String e.Api.ts);
+                    ("body", e.Api.body) ])
+              events)));
+    call t method_id request (fun _ -> ())
+
+  let upload t ~id (a : Api.artifact) =
+    let open A.Upload in
+    let request, params =
+      Capnp_rpc.Capability.Request.create Params.init_pointer
+    in
+    set_exec_id params Params.run_id_set Params.execution_set id;
+    Params.path_set params a.Api.path;
+    Params.content_set params a.Api.content;
+    call t method_id request (fun _ -> ())
+
+  let finish t ~id (r : Api.execution_result) =
+    let open A.Finish in
+    let request, params =
+      Capnp_rpc.Capability.Request.create Params.init_pointer
+    in
+    set_exec_id params Params.run_id_set Params.execution_set id;
+    Params.result_json_set params
+      (Yojson.Safe.to_string (Api.json_of_execution_result r));
+    call t method_id request (fun _ -> ())
+
+  let report_caches t entries =
+    let open A.ReportCaches in
+    let request, params =
+      Capnp_rpc.Capability.Request.create Params.init_pointer
+    in
+    Params.caches_json_set params
+      (Yojson.Safe.to_string (`List (List.map Api.json_of_cache_entry entries)));
+    call t method_id request (fun _ -> ())
 end
 
 module Bot_client = struct

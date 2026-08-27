@@ -39,3 +39,20 @@ interface BenchApi {
 interface BenchBot {
   submitAs @0 (login :Text, command :Text, originJson :Text) -> (outcomeJson :Text);
 }
+
+# API B (§6.2), held by one bench machine's agent: the capability IS the
+# machine, so no method carries an identity.  The agent dials out (§6.4);
+# every method here is called by the agent on the server.
+interface AgentApi {
+  # assignmentJson "" = nothing queued; poll again later
+  claim        @0 () -> (assignmentJson :Text);
+  # order: "continue" | "cancel" -- the control channel for a machine the
+  # server cannot connect to
+  heartbeat    @1 (runId :Text, execution :Int32, phase :Text) -> (order :Text);
+  # eventsJson: JSON list of {seq, ts, body}; runId/execution are taken from
+  # the authenticated arguments, never from the payload
+  postEvents   @2 (runId :Text, execution :Int32, eventsJson :Text);
+  upload       @3 (runId :Text, execution :Int32, path :Text, content :Data);
+  finish       @4 (runId :Text, execution :Int32, resultJson :Text);
+  reportCaches @5 (cachesJson :Text);
+}

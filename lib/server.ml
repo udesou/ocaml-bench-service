@@ -4,8 +4,10 @@
    validation -> config -> run spec), with a FILE-BACKED QUEUE: every accepted
    run becomes a directory under <state>/runs/<run_id>/ holding meta.json (the
    §8 index record), request.json (the audit record), runspec.json and the
-   generated config.  Nothing executes yet -- the queue is the edge where API B
-   starts: a future agent's `claim` drains these directories.
+   generated config.  The EXECUTION side (§6.2, the bottom of this file)
+   drains it: the agent claims a run, heartbeats under a lease, streams
+   events, uploads artifacts into the same directory (the v1 store bundle)
+   and finishes it.
 
    Scope of this build, stated rather than implied:
 
@@ -20,7 +22,9 @@
      and `find_by_run_key` would never hit; submits therefore never answer
      `Reused`.  Idempotency (`Duplicate`) IS implemented, checked against
      ACTIVE runs only -- completed runs are run-key territory (§8.1).
-   * `requeue`/`evict` refuse honestly: there are no executions or agents.
+   * `evict` refuses honestly: caches are REPORTED (report_caches), but how
+     an eviction order reaches a machine the server never connects to is a
+     question raised on the document, not decided here.
 
    Roles: the caller's `auth.role` is NOT trusted.  Identity (the login) is the
    transport's to prove; the ROLE is this server's to decide, from the admins
@@ -79,11 +83,13 @@ let member k = function
 
 let jstr = function `String s -> Some s | _ -> None
 
-let iso_now () =
-  let t = Unix.gmtime (Unix.gettimeofday ()) in
+let iso_of_epoch epoch =
+  let t = Unix.gmtime epoch in
   Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ" (t.Unix.tm_year + 1900)
     (t.Unix.tm_mon + 1) t.Unix.tm_mday t.Unix.tm_hour t.Unix.tm_min
     t.Unix.tm_sec
+
+let iso_now () = iso_of_epoch (Unix.gettimeofday ())
 
 let meta_of deps run_id =
   match read_json (Filename.concat (run_dir deps run_id) "meta.json") with
@@ -228,6 +234,69 @@ let init_pins ~state_dir ~pin_config =
     write_pins_at ~state_dir pins;
     pins
 
+(* --- execution state (§6.2): the server's record of one attempt ------------- *)
+
+(* execution.json in the run directory, server-owned like meta.json.  One
+   record per run, overwritten when a requeue starts the next attempt. *)
+type exec_state = {
+  execution : int;
+  exec_machine : string;
+  claimed_at : string;
+  claimed_at_epoch : float;  (* duration arithmetic without an ISO parser *)
+  last_heartbeat_epoch : float;
+  phase : Api.execution_phase;
+  cancel_requested : bool;
+}
+
+let execution_file deps run_id =
+  Filename.concat (run_dir deps run_id) "execution.json"
+
+(* An agent that stops heartbeating for this long is presumed dead; its run
+   becomes claimable again (the next claim increments `execution`).  Generous
+   because a machine mid-compiler-build is busy, not dead. *)
+let lease_seconds = 15. *. 60.
+
+let read_exec deps run_id =
+  match read_json (execution_file deps run_id) with
+  | None -> None
+  | Some j -> (
+    match (member "execution" j, jstr (member "machine" j)) with
+    | `Int execution, Some exec_machine ->
+      let f k = match member k j with `Float x -> x | `Int i -> float_of_int i | _ -> 0. in
+      Some
+        {
+          execution;
+          exec_machine;
+          claimed_at = Option.value (jstr (member "claimed_at" j)) ~default:"";
+          claimed_at_epoch = f "claimed_at_epoch";
+          last_heartbeat_epoch = f "last_heartbeat_epoch";
+          phase =
+            Option.value
+              (Option.bind
+                 (jstr (member "phase" j))
+                 Api.execution_phase_of_string)
+              ~default:Api.Preparing;
+          cancel_requested =
+            (match member "cancel_requested" j with `Bool b -> b | _ -> false);
+        }
+    | _ -> None)
+
+let write_exec deps run_id (e : exec_state) =
+  write_json (execution_file deps run_id)
+    (`Assoc
+      [
+        ("execution", `Int e.execution);
+        ("machine", `String e.exec_machine);
+        ("claimed_at", `String e.claimed_at);
+        ("claimed_at_epoch", `Float e.claimed_at_epoch);
+        ("last_heartbeat_epoch", `Float e.last_heartbeat_epoch);
+        ("phase", `String (Api.string_of_execution_phase e.phase));
+        ("cancel_requested", `Bool e.cancel_requested);
+      ])
+
+let lease_expired (e : exec_state) =
+  Unix.gettimeofday () -. e.last_heartbeat_epoch > lease_seconds
+
 let drained_machines deps =
   match read_json (machines_file deps) with
   | Some j -> (
@@ -318,7 +387,7 @@ let render_ack deps ~run_id ~(request : Request.t) ~(spec : Gen.t) ~machine
            (List.map (fun v -> "`" ^ Variant.runtime_name v ^ "`") candidates));
     add "\n"
   | [] -> ());
-  add "- selection: %s — %d programs × %d configs × %d invocations\n"
+  add "- selection: %s -- %d programs × %d configs × %d invocations\n"
     (String.concat ", " (List.map Tag_alias.friendly spec.Gen.tags))
     spec.Gen.cost.Cost.programs spec.Gen.cost.Cost.configs
     spec.Gen.cost.Cost.invocations;
@@ -331,7 +400,10 @@ let render_ack deps ~run_id ~(request : Request.t) ~(spec : Gen.t) ~machine
 (* --- the API A functions ---------------------------------------------------- *)
 
 (* Post-auth cancellation, shared by the cancel operation and `/bench cancel`
-   arriving through submit (Q18). *)
+   arriving through submit (Q18).  A queued run dies here; a RUNNING run is
+   only signalled -- the machine is unreachable from the server (Q1), so the
+   cancel order travels as the reply to the agent's next heartbeat, and the
+   state stays Running until the agent confirms via finish. *)
 let cancel_run deps (auth : Api.auth) ~run_id =
   match meta_of deps run_id with
   | None -> err Api.Not_found "No run `%s` is known to this server." run_id
@@ -340,17 +412,33 @@ let cancel_run deps (auth : Api.auth) ~run_id =
       err Api.Forbidden
         "Run `%s` belongs to @%s; only its owner or an admin may cancel it."
         run_id m.requested_by
-    else if m.state <> Api.Queued then
-      err Api.Bad_command
-        "Run `%s` is %s; only queued runs can be cancelled in this build \
-         (nothing executes yet)."
-        run_id
-        (Api.string_of_run_state m.state)
     else begin
-      save_meta deps
-        { m with state = Api.Cancelled; finished_at = Some (iso_now ()) };
-      stamp deps run_id "cancelled";
-      Ok ()
+      match m.state with
+      | Api.Queued ->
+        save_meta deps
+          { m with state = Api.Cancelled; finished_at = Some (iso_now ()) };
+        stamp deps run_id "cancelled";
+        Ok `Cancelled
+      | Api.Running -> (
+        match read_exec deps run_id with
+        | Some e ->
+          if not e.cancel_requested then begin
+            write_exec deps run_id { e with cancel_requested = true };
+            stamp deps run_id "cancel_requested"
+          end;
+          Ok `Signalled
+        | None ->
+          (* Running without an execution record is a broken row; close it. *)
+          save_meta deps
+            { m with state = Api.Cancelled; finished_at = Some (iso_now ()) };
+          stamp deps run_id "cancelled";
+          Ok `Cancelled)
+      | other ->
+        err Api.Bad_command
+          "Run `%s` is already %s; only queued or running runs can be \
+           cancelled."
+          run_id
+          (Api.string_of_run_state other)
     end
 
 let submit deps (auth0 : Api.auth) (s : Api.submit) =
@@ -366,8 +454,19 @@ let submit deps (auth0 : Api.auth) (s : Api.submit) =
      these itself, because the grammar lives here (Q13). *)
   | Request.Help -> Ok (Api.Answered { markdown = render_help deps })
   | Request.Cancel id ->
-    let* () = cancel_run deps auth ~run_id:id in
-    Ok (Api.Answered { markdown = Printf.sprintf "Cancelled `%s`." id })
+    let* how = cancel_run deps auth ~run_id:id in
+    Ok
+      (Api.Answered
+         {
+           markdown =
+             (match how with
+             | `Cancelled -> Printf.sprintf "Cancelled `%s`." id
+             | `Signalled ->
+               Printf.sprintf
+                 "Cancellation signalled for `%s` (it is running); the agent \
+                  aborts it at its next heartbeat."
+                 id);
+         })
   | Request.Run | Request.Rerun ->
     let* () = Authz.vet_request auth request in
     let* machine =
@@ -495,6 +594,14 @@ let submit deps (auth0 : Api.auth) (s : Api.submit) =
             ("login", `String auth.Api.login);
             ("command", `String (Util.trim request.Request.raw));
             ("normalized", `String normalized);
+            (* claim-time inputs (§6.2): rerun becomes the assignment's
+               cache-bypass flag; the estimate feeds the timeout formula *)
+            ( "action",
+              `String
+                (match request.Request.action with
+                | Request.Rerun -> "rerun"
+                | _ -> "run") );
+            ("estimate_seconds", `Int (int_of_float spec.Gen.cost.Cost.seconds));
             ( "priority",
               match request.Request.priority with
               | Some Request.Top -> `String "top"
@@ -516,7 +623,11 @@ let submit deps (auth0 : Api.auth) (s : Api.submit) =
           baseline = Some (pin_of_variant ~default_repo baseline);
           candidates = List.map (pin_of_variant ~default_repo) candidates;
           queued_at = now;
+          started_at = None;
           finished_at = None;
+          duration_seconds = None;
+          cells_passed = 0;
+          cells_failed = 0;
           summary = None;
           links = links deps run_id;
         }
@@ -574,11 +685,26 @@ let status deps (auth0 : Api.auth) ~run_id =
         | _ -> [])
       | None -> []
     in
+    let progress =
+      match (m.state, read_exec deps run_id) with
+      | Api.Running, Some e ->
+        Some
+          {
+            Api.phase = e.phase;
+            execution = e.execution;
+            (* benchmark-level counts arrive with the §7 progress plugin;
+               until then the phase and attempt number are what is known *)
+            benchmarks_done = 0;
+            benchmarks_total = 0;
+            current = None;
+          }
+      | _ -> None
+    in
     Ok
       {
         Api.run_id = m.run_id;
         state = m.state;
-        progress = None;  (* nothing executes yet: API B territory *)
+        progress;
         machine = m.machine;
         timestamps;
         completion = None;
@@ -615,7 +741,8 @@ let events deps (auth0 : Api.auth) ~run_id ~since =
 
 let cancel deps (auth0 : Api.auth) ~run_id =
   let* auth = effective_auth deps auth0 in
-  cancel_run deps auth ~run_id
+  let* (_ : [ `Cancelled | `Signalled ]) = cancel_run deps auth ~run_id in
+  Ok ()
 
 let list deps (auth0 : Api.auth) (filter : Api.filter) (page : Api.page) =
   let* _auth = effective_auth deps auth0 in
@@ -649,13 +776,17 @@ let machines deps (auth0 : Api.auth) =
   let* auth = effective_auth deps auth0 in
   let* () = require_admin auth in
   let drained = drained_machines deps in
+  let running = List.filter (fun (m : Api.meta) -> m.state = Api.Running) (all_metas deps) in
   Ok
     (List.map
        (fun name ->
          {
            Api.machine = name;
            drained = List.mem name drained;
-           busy_with = None (* no executions yet *);
+           busy_with =
+             Option.map
+               (fun (m : Api.meta) -> m.run_id)
+               (List.find_opt (fun (m : Api.meta) -> m.machine = name) running);
          })
        (Service_config.machine_names deps.service))
 
@@ -677,22 +808,72 @@ let set_drain deps (auth0 : Api.auth) ~machine ~drained:want =
 let drain deps auth ~machine = set_drain deps auth ~machine ~drained:true
 let undrain deps auth ~machine = set_drain deps auth ~machine ~drained:false
 
+(* Put a terminal run back on the queue: the run keeps its identity and its
+   spec (the pins it snapshotted), and the next claim starts execution N+1.
+   An active run is not requeueable -- cancel it first. *)
 let requeue deps (auth0 : Api.auth) ~run_id =
   let* auth = effective_auth deps auth0 in
   let* () = require_admin auth in
   match meta_of deps run_id with
   | None -> err Api.Not_found "No run `%s` is known to this server." run_id
-  | Some _ ->
-    err Api.Bad_command
-      "Nothing to requeue: no execution has ever run `%s` (no agent is \
-       connected in this build)."
-      run_id
+  | Some m -> (
+    match m.state with
+    | Api.Queued | Api.Running | Api.Publishing ->
+      err Api.Bad_command
+        "Run `%s` is %s -- only finished runs can be requeued (cancel it \
+         first if it is stuck)."
+        run_id
+        (Api.string_of_run_state m.state)
+    | Api.Done | Api.Failed | Api.Timed_out | Api.Cancelled ->
+      save_meta deps
+        {
+          m with
+          state = Api.Queued;
+          finished_at = None;
+          duration_seconds = None;
+          cells_passed = 0;
+          cells_failed = 0;
+          summary = None;
+        };
+      stamp deps run_id "requeued";
+      Ok ())
+
+let machines_dir deps = Filename.concat deps.state_dir "machines"
+
+let machine_caches_file deps machine =
+  Filename.concat (machines_dir deps) (machine ^ "-caches.json")
+
+let reported_caches deps machine =
+  match read_json (machine_caches_file deps machine) with
+  | None -> None
+  | Some j -> (
+    match member "caches" j with
+    | `List l ->
+      Some
+        ( Option.value (jstr (member "reported_at" j)) ~default:"never",
+          List.filter_map
+            (fun c -> Result.to_option (Api.cache_entry_of_json c))
+            l )
+    | _ -> None)
 
 let evict deps (auth0 : Api.auth) ~machine (_ : Api.cache_selector) =
   let* auth = effective_auth deps auth0 in
   let* () = require_admin auth in
-  err Api.Bad_command
-    "No agent is connected to `%s` yet; there are no caches to evict." machine
+  match reported_caches deps machine with
+  | None ->
+    err Api.Bad_command
+      "No agent has reported caches for `%s` yet; there is nothing to evict."
+      machine
+  | Some (reported_at, entries) ->
+    (* Visibility exists (report_caches); the DELIVERY of an eviction order to
+       a machine the server cannot connect to is not designed yet -- raised on
+       the document rather than invented here. *)
+    err Api.Bad_command
+      "Eviction is not wired to the agent yet. `%s` last reported %d cache \
+       entr%s at %s."
+      machine (List.length entries)
+      (if List.length entries = 1 then "y" else "ies")
+      reported_at
 
 let versions deps (auth0 : Api.auth) =
   let* auth = effective_auth deps auth0 in
@@ -758,6 +939,268 @@ let bump deps (auth0 : Api.auth) ~component ?to_ () =
         write_pins deps (others @ [ pin ]);
         deps.on_bump ();
         Ok pin))
+
+(* --- API B: the execution side (§6.2) --------------------------------------- *)
+(* Called BY the agent (§6.4: the agent dials out; the server never connects
+   to a machine).  ~machine is the transport-proven identity -- the agent
+   capability is bound to one machine exactly as a user capability is bound
+   to one login.  No roles here: an agent capability can only do agent
+   things, and only for its own machine's runs. *)
+
+(* The guard on every per-execution call: the run exists, the execution
+   record matches the caller's id, and the caller is the machine it was
+   assigned to.  A mismatch means the lease moved on (the server presumed the
+   agent dead and reassigned) -- the stale agent must stop, not write. *)
+let own_execution deps ~machine (id : Api.execution_id) =
+  match meta_of deps id.Api.run_id with
+  | None ->
+    err Api.Not_found "No run `%s` is known to this server." id.Api.run_id
+  | Some m -> (
+    match read_exec deps id.Api.run_id with
+    | None ->
+      err Api.Not_found "Run `%s` has no execution on record." id.Api.run_id
+    | Some e ->
+      if e.exec_machine <> machine || e.execution <> id.Api.execution then
+        err Api.Forbidden
+          "Execution %d of `%s` is not this agent's (the lease moved on)."
+          id.Api.execution id.Api.run_id
+      else Ok (m, e))
+
+(* Hand out one assignment: everything the agent needs travels now, because
+   the server cannot be asked follow-ups by a machine it never connects to. *)
+let assign deps ~machine (m : Api.meta) =
+  let run_id = m.Api.run_id in
+  match read_json (Filename.concat (run_dir deps run_id) "runspec.json") with
+  | None ->
+    Api.internal
+      ~detail:("claim: missing runspec.json for " ^ run_id)
+      "The service lost the run spec for `%s`." run_id
+  | Some spec ->
+    let req = request_json_of deps run_id in
+    let field k = Option.bind req (fun j -> jstr (member k j)) in
+    let caches = if field "action" = Some "rerun" then `Bypass else `Reuse in
+    let estimate =
+      match Option.map (member "estimate_seconds") req with
+      | Some (`Int s) -> s
+      | _ -> 0 (* pre-agent rows: the timeout floor covers them *)
+    in
+    let execution =
+      match read_exec deps run_id with Some e -> e.execution + 1 | None -> 1
+    in
+    let now_epoch = Unix.gettimeofday () in
+    let now = iso_of_epoch now_epoch in
+    write_exec deps run_id
+      {
+        execution;
+        exec_machine = machine;
+        claimed_at = now;
+        claimed_at_epoch = now_epoch;
+        last_heartbeat_epoch = now_epoch;
+        phase = Api.Preparing;
+        cancel_requested = false;
+      };
+    save_meta deps
+      {
+        m with
+        state = Api.Running;
+        started_at =
+          (match m.Api.started_at with Some _ as s -> s | None -> Some now);
+      };
+    stamp deps run_id
+      (if execution = 1 then "started"
+       else Printf.sprintf "started_execution_%d" execution);
+    Ok
+      (Some
+         {
+           Api.id = { Api.run_id; execution };
+           spec;
+           caches;
+           timeout_seconds = Runspec.timeout_of_estimate ~seconds:estimate;
+         })
+
+let claim deps ~machine =
+  if not (List.mem machine (Service_config.machine_names deps.service)) then
+    err Api.Unknown_machine
+      "This server has no machine `%s` registered." machine
+  else if List.mem machine (drained_machines deps) then
+    Ok None (* drained = no NEW work; a run already claimed finishes *)
+  else begin
+    let metas = List.rev (all_metas deps) (* oldest first *) in
+    let mine (m : Api.meta) = m.Api.machine = machine in
+    let running =
+      List.filter (fun m -> mine m && m.Api.state = Api.Running) metas
+    in
+    let live_lease =
+      List.exists
+        (fun (m : Api.meta) ->
+          match read_exec deps m.Api.run_id with
+          | Some e -> not (lease_expired e)
+          | None -> false)
+        running
+    in
+    if live_lease then Ok None (* one slot per machine: it is taken *)
+    else begin
+      (* dead leases: a cancel-requested run closes (the agent died before it
+         could abort); anything else becomes claimable as the next attempt *)
+      let reclaimable =
+        List.filter
+          (fun (m : Api.meta) ->
+            match read_exec deps m.Api.run_id with
+            | Some e when e.cancel_requested ->
+              save_meta deps
+                {
+                  m with
+                  Api.state = Api.Cancelled;
+                  finished_at = Some (iso_now ());
+                };
+              stamp deps m.Api.run_id "cancelled";
+              false
+            | _ -> true)
+          running
+      in
+      let queued =
+        List.filter (fun m -> mine m && m.Api.state = Api.Queued) metas
+      in
+      let priority (m : Api.meta) =
+        match request_json_of deps m.Api.run_id with
+        | Some j -> jstr (member "priority" j) = Some "top"
+        | None -> false
+      in
+      let queued =
+        List.filter priority queued
+        @ List.filter (fun m -> not (priority m)) queued
+      in
+      match reclaimable @ queued with
+      | [] -> Ok None
+      | m :: _ -> assign deps ~machine m
+    end
+  end
+
+let heartbeat deps ~machine (id : Api.execution_id) phase =
+  match meta_of deps id.Api.run_id with
+  | None ->
+    err Api.Not_found "No run `%s` is known to this server." id.Api.run_id
+  | Some m -> (
+    match read_exec deps id.Api.run_id with
+    | None -> Ok `Cancel
+    | Some e ->
+      (* a superseded or finalized execution is told to stop, not errored:
+         `Cancel` is the one reply a stale agent always knows how to obey *)
+      if
+        e.exec_machine <> machine
+        || e.execution <> id.Api.execution
+        || m.Api.state <> Api.Running
+      then Ok `Cancel
+      else begin
+        write_exec deps id.Api.run_id
+          { e with last_heartbeat_epoch = Unix.gettimeofday (); phase };
+        Ok (if e.cancel_requested then `Cancel else `Continue)
+      end)
+
+let post_events deps ~machine (id : Api.execution_id) events =
+  let* _m, e = own_execution deps ~machine id in
+  let path = Filename.concat (run_dir deps id.Api.run_id) "events.ndjson" in
+  let oc = open_out_gen [ Open_append; Open_creat ] 0o644 path in
+  List.iter
+    (fun (ev : Api.event) ->
+      (* run_id and execution are the AUTHENTICATED ones, never the payload's:
+         a compromised bench machine must not write into another run's stream *)
+      let ev =
+        { ev with Api.run_id = id.Api.run_id; execution = id.Api.execution }
+      in
+      output_string oc (Yojson.Safe.to_string (Api.json_of_event ev) ^ "\n"))
+    events;
+  close_out oc;
+  (* events are signs of life; count them toward the lease *)
+  write_exec deps id.Api.run_id
+    { e with last_heartbeat_epoch = Unix.gettimeofday () };
+  Ok ()
+
+(* Files the SERVER writes in a run directory; an upload may never name one. *)
+let server_owned =
+  [
+    "meta.json"; "request.json"; "runspec.json"; "config.yml";
+    "execution.json"; "events.ndjson";
+  ]
+
+let safe_rel_path p =
+  p <> ""
+  && Filename.is_relative p
+  && List.for_all
+       (fun seg -> seg <> "" && seg <> "." && seg <> "..")
+       (String.split_on_char '/' p)
+
+let upload deps ~machine (id : Api.execution_id) (a : Api.artifact) =
+  let* _ = own_execution deps ~machine id in
+  if not (safe_rel_path a.Api.path) then
+    err Api.Bad_command "Artifact path `%s` is not a clean relative path."
+      a.Api.path
+  else if List.mem a.Api.path server_owned then
+    err Api.Forbidden "`%s` is server-owned; an agent cannot write it."
+      a.Api.path
+  else begin
+    (* v1 store: the run directory IS the bundle (§8's layout), so landing
+       artifacts beside meta.json is the store write, and finish's Ok is the
+       confirmation after which the agent may delete its local run dir *)
+    let dst = Filename.concat (run_dir deps id.Api.run_id) a.Api.path in
+    mkdir_p (Filename.dirname dst);
+    Util.write_file dst a.Api.content;
+    Ok ()
+  end
+
+let finish deps ~machine (id : Api.execution_id) (r : Api.execution_result) =
+  let* m, e = own_execution deps ~machine id in
+  if m.Api.state <> Api.Running then
+    err Api.Bad_command "Run `%s` is %s, not running." id.Api.run_id
+      (Api.string_of_run_state m.Api.state)
+  else begin
+    let state =
+      match r.Api.outcome with
+      | `Done -> Api.Done
+      | `Failed -> Api.Failed
+      | `Timed_out -> Api.Timed_out
+      | `Aborted -> Api.Cancelled
+    in
+    let now_epoch = Unix.gettimeofday () in
+    save_meta deps
+      {
+        m with
+        Api.state;
+        finished_at = Some (iso_of_epoch now_epoch);
+        duration_seconds = Some (int_of_float (now_epoch -. e.claimed_at_epoch));
+        cells_passed = r.Api.cells_passed;
+        cells_failed = r.Api.cells_failed;
+      };
+    stamp deps id.Api.run_id (Api.string_of_run_state state);
+    Ok ()
+  end
+
+let report_caches deps ~machine entries =
+  if not (List.mem machine (Service_config.machine_names deps.service)) then
+    err Api.Unknown_machine
+      "This server has no machine `%s` registered." machine
+  else begin
+    mkdir_p (machines_dir deps);
+    write_json
+      (machine_caches_file deps machine)
+      (`Assoc
+        [
+          ("reported_at", `String (iso_now ()));
+          ("caches", `List (List.map Api.json_of_cache_entry entries));
+        ]);
+    Ok ()
+  end
+
+(* One machine's view of the service, the §6.2 module. *)
+let execution_api deps ~machine : (module Api.EXECUTION_API) =
+  (module struct
+    let claim () = claim deps ~machine
+    let heartbeat id phase = heartbeat deps ~machine id phase
+    let post_events id events = post_events deps ~machine id events
+    let upload id a = upload deps ~machine id a
+    let finish id r = finish deps ~machine id r
+    let report_caches entries = report_caches deps ~machine entries
+  end)
 
 (* The whole thing as the document's module, proving the signature is
    implementable as specified. *)

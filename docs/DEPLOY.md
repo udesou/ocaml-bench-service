@@ -4,13 +4,15 @@ The service's front half is three pieces in three places:
 
 | piece | where it lives | needs |
 |---|---|---|
-| `bench-serve` (the server) | any host — a laptop today, a VPS later | git, opam, python3+PyYAML, capnp; clones of running-ng and ocaml-bench-dashboard |
+| `bench-serve` (the server) | any host -- a laptop today, a VPS later | git, opam, python3+PyYAML, capnp; clones of running-ng and ocaml-bench-dashboard |
 | the PR bot ([bot/](../bot/)) | the ocaml/ocaml **fork**'s Actions | `BENCH_BOT_CAP` secret + a prebuilt `bench-cli` URL |
 | `bench-cli` | anywhere | a `.cap` file |
+| `bench-agent` | the bench machine | its `agent-<machine>.cap` |
 
-Nothing that executes benchmarks is involved yet: the server validates,
-resolves, queues, and **acknowledges** — the run directories it writes under
-`<state>/runs/` are the hand-off point for the future bench agent (API B).
+The server validates, resolves, queues, and **acknowledges**; the run
+directories it writes under `<state>/runs/` are the queue the agent drains.
+`bench-agent` is stage 1: it claims, heartbeats, streams events, uploads and
+finishes over the wire, but its executor is a stub -- no benchmark runs yet.
 
 ## Standing the server up (laptop or VPS, same steps)
 
@@ -22,8 +24,8 @@ scripts/start_server.sh              # server + webview + bot, one screen
                                      # session ("bench"; also: stop|status)
 ```
 
-(Or run the pieces by hand — `scripts/serve.sh`, `scripts/webview.sh 8080`,
-`bot/poll.sh <owner/repo>` — each in its own window: all three are foreground
+(Or run the pieces by hand -- `scripts/serve.sh`, `scripts/webview.sh 8080`,
+`bot/poll.sh <owner/repo>` -- each in its own window: all three are foreground
 processes.)
 
 Set `BENCH_BASE_URL` in `server.env` to where the webview is served
@@ -37,9 +39,9 @@ address, the fingerprint of its secret key, and an unguessable service id.
 Sending someone their file is granting access; there are no accounts or
 passwords anywhere else.
 
-macOS notes (learned by deploying there — arm64 builds everything cleanly):
+macOS notes (learned by deploying there -- arm64 builds everything cleanly):
 
-- `brew install capnp pkg-config gmp` — Homebrew's formula is **`capnp`**;
+- `brew install capnp pkg-config gmp` -- Homebrew's formula is **`capnp`**;
   `capnproto` is the Debian/apt name.
 - Homebrew's python refuses `pip install` (PEP 668): put PyYAML in a venv and
   expose a **wrapper script** at `~/.local/bin/python3` that execs the venv's
@@ -47,7 +49,7 @@ macOS notes (learned by deploying there — arm64 builds everything cleanly):
   `~/.local/bin` first on PATH.
 - **AirPlay Receiver owns port 7000** on modern macOS: use another port
   (`server.env` is where that lives).
-- `BENCH_PUBLIC_ADDRESS` needs a literal IPv4 address or a real DNS name — an
+- `BENCH_PUBLIC_ADDRESS` needs a literal IPv4 address or a real DNS name -- an
   mDNS `.local` name resolves IPv6-first and the client stops at the first
   unroutable address. Bind `tcp:[::]:PORT` for dual-stack listening.
 
@@ -56,9 +58,9 @@ macOS notes (learned by deploying there — arm64 builds everything cleanly):
 What makes the server movable is that its *identity* is two files, not a
 machine:
 
-- `<state>/secret-key.pem` — the vat key. Capability files pin its
+- `<state>/secret-key.pem` -- the vat key. Capability files pin its
   fingerprint, so keeping this file keeps every issued `.cap` trusted.
-- `service.json` + `server.env` — policy and address.
+- `service.json` + `server.env` -- policy and address.
 
 **Give `BENCH_PUBLIC_ADDRESS` a DNS name from day one** (dynamic DNS pointing
 at the laptop is fine). Then moving the service to a new host is:
@@ -78,9 +80,29 @@ updating the fork's `BENCH_BOT_CAP` secret.
 
 A laptop behind home NAT needs one reachable TCP port for the GitHub Action
 to connect: a router port-forward to `BENCH_LISTEN`, or a TCP tunnel. (For
-CLI-only use on your own machines, a VPN address like a tailnet name works —
+CLI-only use on your own machines, a VPN address like a tailnet name works --
 but GitHub's runners must be able to reach whatever address goes into
 `bot.cap`, so the bot needs the public route.)
+
+## Connecting a bench machine
+
+The server writes `agent-<machine>.cap` for every machine in `service.json`.
+The file is the machine's identity, exactly as `<login>.cap` is a user's: it
+can claim and report that machine's work, and nothing else (never submit,
+never admin), so it is safe to live on a host that executes PR code.
+
+```sh
+# on the bench machine, in this repo
+make switch deps build           # or copy a prebuilt bench-agent
+scp server:~/.ocaml-bench-service/caps/agent-<machine>.cap .
+BENCH_AGENT_CAP=agent-<machine>.cap ./_build/default/bin/bench_agent.exe
+```
+
+The agent polls (`--interval`, default 5 s), and exits on a broken
+connection; run it under a supervisor loop (screen/systemd) that restarts
+it. `--once` processes a single assignment and exits, which is the smoke
+test: submit a run, watch the agent claim and finish it, see the webview row
+go `queued -> running -> done`.
 
 ## Wiring the fork
 
@@ -95,7 +117,7 @@ detail):
    `.github/workflows/bench.yml`.
 
 `/bench …` on a fork PR then round-trips: comment → Action → capnp → server
-→ queued run + acknowledgement comment (or a refusal / help text — everything
+→ queued run + acknowledgement comment (or a refusal / help text -- everything
 the server returns is postable verbatim).
 
 ## Using the CLI from anywhere
@@ -109,5 +131,5 @@ bench-cli submit "/bench tag=small invocations=1 vs=5.4.1,trunk"
 bench-cli list
 ```
 
-The file is the identity — guard it like a token, and ask an admin to remove
+The file is the identity -- guard it like a token, and ask an admin to remove
 your login from `service.json` if it leaks (a restart then invalidates it).

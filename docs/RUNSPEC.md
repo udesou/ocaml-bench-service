@@ -10,12 +10,12 @@ run's provenance record.
 
 ## Design rules
 
-**It describes WHAT to measure — nothing else.** Everything machine-side is
+**It describes WHAT to measure -- nothing else.** Everything machine-side is
 deliberately absent, derived by the agent from its own configuration plus this
 spec: checkout paths, log dir, opam root, the process environment (the agent
 sets `RUNNING_TAG` from `selection.tags`, comma-joined), and the command line
 (running-ng's entry script and how to supervise it are agent knowledge).
-Execution-scoped directives — cache bypass for `rerun`, the timeout — travel
+Execution-scoped directives -- cache bypass for `rerun`, the timeout -- travel
 in the §6.2 *assignment* at claim time, never in the spec.
 
 **Everything is resolved before dispatch.** Every source and runtime carries a
@@ -33,36 +33,36 @@ so the current aligned shape **is version 1**.
 
 ## Fields
 
-### `spec_version` — string
+### `spec_version` -- string
 Currently `"1"`.
 
-### `run_id` — string
+### `run_id` -- string
 The run's identity everywhere: the queue row, the store bundle, the webview
 row. (Not the contract's `run_id`: running-ng names its run directory itself.)
 
-### `run_key` — string or null
+### `run_key` -- string or null
 The §8.1 content identity of the measurement, used to answer repeat requests
 from the store. Computed by the server (`lib/run_key.ml`); **null until agent
 reports supply the machine facts it hashes** (tool versions, environment
-fingerprint) — a partial key would be a wrong one.
+fingerprint) -- a partial key would be a wrong one.
 
-### `family` — string
+### `family` -- string
 `"macro"` today; `"micro"` reserved (§12). Names which benchmark collection
 the run draws from, so micro becomes a data change rather than a schema change.
 
-### `sources` — list of `{name, repo, commit}`
+### `sources` -- list of `{name, repo, commit}`
 One entry per repo the run needs: `running-ng`, `macro-benches` (or
 `benches`, when micro lands), and `olly` (runtime_events_tools). `repo` is
-the clone URL; `commit` is the sha the server resolved — a snapshot of the
+the clone URL; `commit` is the sha the server resolved -- a snapshot of the
 server's pins (`pins.json`, changed only by the admin `bump` op) at
 submission time. The macro-benches commit is part of the
 run's identity: benchmark binaries are cached as `<benchmark>-<runtime>` and
 the runtime name encodes only the *compiler* sha, so a benchmark-source change
-does not invalidate a cached binary — without this pin, a run silently
+does not invalidate a cached binary -- without this pin, a run silently
 measures old benchmark code against a new compiler.
 
 ### `baseline`, `candidates`
-The compilers, already pinned — a ref like `trunk` never reaches here.
+The compilers, already pinned -- a ref like `trunk` never reaches here.
 `baseline` is exactly one runtime (the merge base by default); every delta is
 reported relative to it, so which side is the baseline decides the sign of the
 whole report. `candidates` is everything measured against it (may be empty:
@@ -75,7 +75,7 @@ absolute numbers).
 | `configure_args` | e.g. `--enable-flambda`; part of run identity and switch provenance |
 
 ### `selection`
-`tags` is a list of `{name, requested}` — the resolved running-ng tag and the
+`tags` is a list of `{name, requested}` -- the resolved running-ng tag and the
 spelling the user typed. Several tags select their **union** (running-ng's own
 comma-separated `RUNNING_TAG` semantics; the agent sets that variable from
 this field). `programs` is how many programs the selection resolves to, per
@@ -87,14 +87,14 @@ expanded `configs` list, `config_count` (configs × sweep points), and `sweeps`
 as `{parameter: [values]}`.
 
 ### `config`
-`filename`, `md5`, `contents` — the generated running-ng config travels
+`filename`, `md5`, `contents` -- the generated running-ng config travels
 **inline**, so a spec can be archived, diffed, or replayed with no shared
 filesystem. The agent writes `contents` wherever its own layout dictates and
 must never trust a file already on disk; the digest only detects drift, it is
 not a security boundary.
 
 ### `artifacts`
-`fetch`: the globs the agent brings back — contract artifacts, logs, per-tool
+`fetch`: the globs the agent brings back -- contract artifacts, logs, per-tool
 sidecars, the merged `runbms.yml`. `exclude` keeps raw memtrace traces on the
 machine: they are large, and the store holds the small canonical artifacts.
 Artifacts must be fetched **even when the run fails**: the contract degrades
@@ -105,7 +105,7 @@ Advisory strings surfaced in the acknowledgement. None blocks a run.
 
 ## What is deliberately NOT here
 
-- **Machine-side anything**: paths, env, command line, ssh (§6.1 — the
+- **Machine-side anything**: paths, env, command line, ssh (§6.1 -- the
   agent's concern). The agent discovers the run directory under its own
   `LOG_DIR` (running-ng names it), runs the entry script in its own process
   group (`setsid`, so cancellation can SIGTERM the group before SIGKILL), and
@@ -113,7 +113,7 @@ Advisory strings surfaced in the acknowledgement. None blocks a run.
 - **The timeout**: execution-scoped, carried by the §6.2 assignment at claim
   time. The shared formula (`max(90 min, 2.5 × estimate)`) lives in
   `Runspec.timeout_seconds`.
-- **The audit trail**: who asked, from where, the verbatim command — that is
+- **The audit trail**: who asked, from where, the verbatim command -- that is
   `request.json` in the bundle (§8), written by the server beside the spec.
 - **Credentials and results destinations**: the agent uploads; the server
   publishes.

@@ -295,7 +295,11 @@ type meta = {
          lack it and the index must keep rendering them *)
   candidates : runtime_pin list;
   queued_at : string;
+  started_at : string option;  (* first claim; §8 *)
   finished_at : string option;
+  duration_seconds : int option;
+  cells_passed : int;
+  cells_failed : int;
   summary : summary option;
   links : links;
 }
@@ -317,6 +321,91 @@ type machine_status = {
 }
 
 type cache_selector = All_caches | Runtime_cache of string (* runtime name *)
+
+(* --- API B: the run execution API (§6.2) ----------------------------------- *)
+(* The §6.2 types.  Deviations from the document's spelling, both raised:
+   `agent_auth` does not exist here (the capability IS the machine, the same
+   collapse that removed --login from API A), and claim's `slot` argument is
+   gone for the same reason -- the capability names the machine, and a machine
+   is one slot (Service_config: one concurrent run because running-ng locks
+   the opam root).  `artifact` and `execution_result` are referenced by the
+   document without a definition: PROVISIONAL spellings below. *)
+
+type execution_id = { run_id : string; execution : int }
+
+(* §6.3: switch-provenance.json, the recorded build inputs of one switch.
+   The runtime name cannot see the environmental inputs (dune, opam repo
+   state), so reuse compares this record, never the name alone. *)
+type provenance = {
+  compiler_sha : string;
+  configure_args : string;
+  dune_version : string;
+  opam_repo_commit : string;
+  built_at : string;
+  build_id : string;  (** fresh nonce per (re)build; binaries key on it *)
+}
+
+type cache_entry =
+  (* agent-side caches only (§6.3): each class has its own key shape, hence a
+     constructor each.  Checkouts are not reported: re-pinned per run, they
+     cannot be stale. *)
+  | Switch of {
+      runtime_name : string;
+      provenance : provenance;
+      size_bytes : int64;
+      last_used : string;
+    }
+  | Binaries of {
+      runtime_name : string;
+      benches_commit : string;
+      switch_build_id : string;
+      size_bytes : int64;
+      last_used : string;
+    }
+
+type assignment = {
+  (* an execution: the spec plus execution-scoped directives, which never
+     live in the spec *)
+  id : execution_id;
+  spec : Yojson.Safe.t;  (** the run spec (docs/RUNSPEC.md), verbatim *)
+  caches : [ `Reuse | `Bypass ];  (** Bypass when the run came from `rerun` *)
+  timeout_seconds : int;
+}
+
+type execution_outcome = [ `Done | `Failed | `Timed_out | `Aborted ]
+(* Timed_out split from Failed: only the agent can tell them apart.
+   `Aborted is the reply to a cancel order arriving via heartbeat. *)
+
+type execution_result = {
+  outcome : execution_outcome;
+  cells_passed : int;
+  cells_failed : int;
+  detail : string option;  (** human-readable failure reason, for the meta *)
+}
+
+(* PROVISIONAL: one artifact = one bundle-relative file, whole.  Chunked
+   upload is an additive change when a file outgrows a message. *)
+type artifact = { path : string; content : string }
+
+(* Every function is called BY the agent ON the server (§6.4: the agent dials
+   out).  No auth argument: the transport binds the capability to a machine,
+   exactly as API A binds one to a login. *)
+module type EXECUTION_API = sig
+  val claim : unit -> (assignment option, error) result
+  (** "give me work for this machine"; None = nothing queued.  Claiming
+      creates an execution and starts its lease. *)
+
+  val heartbeat :
+    execution_id -> execution_phase -> ([ `Continue | `Cancel ], error) result
+  (** doubles as the control channel: the reply tells the agent to keep going
+      or to abort -- how cancellation reaches a machine the server cannot
+      connect to *)
+
+  val post_events : execution_id -> event list -> (unit, error) result
+  val upload : execution_id -> artifact -> (unit, error) result
+  val finish : execution_id -> execution_result -> (unit, error) result
+  val report_caches : cache_entry list -> (unit, error) result
+end
 
 (* --- the signature (§5.2) ------------------------------------------------- *)
 
@@ -392,6 +481,28 @@ let string_of_execution_phase = function
   | Measuring -> "measuring"
   | Collecting -> "collecting"
   | Aborted -> "aborted"
+
+let execution_phase_of_string = function
+  | "preparing" -> Some Preparing
+  | "provisioning" -> Some Provisioning
+  | "building" -> Some Building
+  | "measuring" -> Some Measuring
+  | "collecting" -> Some Collecting
+  | "aborted" -> Some Aborted
+  | _ -> None
+
+let string_of_execution_outcome = function
+  | `Done -> "done"
+  | `Failed -> "failed"
+  | `Timed_out -> "timed_out"
+  | `Aborted -> "aborted"
+
+let execution_outcome_of_string = function
+  | "done" -> Some `Done
+  | "failed" -> Some `Failed
+  | "timed_out" -> Some `Timed_out
+  | "aborted" -> Some `Aborted
+  | _ -> None
 
 (* --- JSON encodings -------------------------------------------------------- *)
 
@@ -673,7 +784,14 @@ let meta_of_json j =
           | `List l -> List.filter_map pin_of l
           | _ -> []);
         queued_at;
+        started_at = json_str (mem "started_at");
         finished_at = json_str (mem "finished_at");
+        duration_seconds =
+          (match mem "duration_seconds" with `Int s -> Some s | _ -> None);
+        cells_passed =
+          (match mem "cells_passed" with `Int i -> i | _ -> 0);
+        cells_failed =
+          (match mem "cells_failed" with `Int i -> i | _ -> 0);
         summary =
           (match json_member "improved" (mem "summary") with
           | `Int improved ->
@@ -756,8 +874,172 @@ let json_of_meta (m : meta) =
         match m.baseline with None -> `Null | Some p -> json_of_runtime_pin p );
       ("candidates", `List (List.map json_of_runtime_pin m.candidates));
       ("queued_at", str m.queued_at);
+      ("started_at", opt_str m.started_at);
       ("finished_at", opt_str m.finished_at);
+      ( "duration_seconds",
+        match m.duration_seconds with None -> `Null | Some s -> `Int s );
+      ("cells_passed", `Int m.cells_passed);
+      ("cells_failed", `Int m.cells_failed);
       ( "summary",
         match m.summary with None -> `Null | Some s -> json_of_summary s );
       ("links", json_of_links m.links);
+    ]
+
+(* --- API B encodings (§6.2) ------------------------------------------------ *)
+
+let json_of_provenance (p : provenance) =
+  `Assoc
+    [
+      ("compiler_sha", str p.compiler_sha);
+      ("configure_args", str p.configure_args);
+      ("dune_version", str p.dune_version);
+      ("opam_repo_commit", str p.opam_repo_commit);
+      ("built_at", str p.built_at);
+      ("build_id", str p.build_id);
+    ]
+
+let provenance_of_json j =
+  let field k = Option.value (json_str (json_member k j)) ~default:"" in
+  {
+    compiler_sha = field "compiler_sha";
+    configure_args = field "configure_args";
+    dune_version = field "dune_version";
+    opam_repo_commit = field "opam_repo_commit";
+    built_at = field "built_at";
+    build_id = field "build_id";
+  }
+
+let json_of_cache_entry = function
+  | Switch { runtime_name; provenance; size_bytes; last_used } ->
+    `Assoc
+      [
+        ("cache", str "switch");
+        ("runtime_name", str runtime_name);
+        ("provenance", json_of_provenance provenance);
+        ("size_bytes", str (Int64.to_string size_bytes));
+        ("last_used", str last_used);
+      ]
+  | Binaries { runtime_name; benches_commit; switch_build_id; size_bytes; last_used }
+    ->
+    `Assoc
+      [
+        ("cache", str "binaries");
+        ("runtime_name", str runtime_name);
+        ("benches_commit", str benches_commit);
+        ("switch_build_id", str switch_build_id);
+        ("size_bytes", str (Int64.to_string size_bytes));
+        ("last_used", str last_used);
+      ]
+
+let cache_entry_of_json j =
+  let field k = Option.value (json_str (json_member k j)) ~default:"" in
+  let size =
+    match Int64.of_string_opt (field "size_bytes") with
+    | Some s -> s
+    | None -> 0L
+  in
+  match json_str (json_member "cache" j) with
+  | Some "switch" ->
+    Ok
+      (Switch
+         {
+           runtime_name = field "runtime_name";
+           provenance = provenance_of_json (json_member "provenance" j);
+           size_bytes = size;
+           last_used = field "last_used";
+         })
+  | Some "binaries" ->
+    Ok
+      (Binaries
+         {
+           runtime_name = field "runtime_name";
+           benches_commit = field "benches_commit";
+           switch_build_id = field "switch_build_id";
+           size_bytes = size;
+           last_used = field "last_used";
+         })
+  | _ -> Error "cache entry: unknown `cache` kind"
+
+let json_of_execution_id (id : execution_id) =
+  `Assoc [ ("run_id", str id.run_id); ("execution", `Int id.execution) ]
+
+let json_of_assignment (a : assignment) =
+  `Assoc
+    [
+      ("id", json_of_execution_id a.id);
+      ("spec", a.spec);
+      ("caches", str (match a.caches with `Reuse -> "reuse" | `Bypass -> "bypass"));
+      ("timeout_seconds", `Int a.timeout_seconds);
+    ]
+
+let assignment_of_json j =
+  let idj = json_member "id" j in
+  match
+    (json_str (json_member "run_id" idj), json_member "execution" idj)
+  with
+  | Some run_id, `Int execution ->
+    Ok
+      {
+        id = { run_id; execution };
+        spec = json_member "spec" j;
+        caches =
+          (match json_str (json_member "caches" j) with
+          | Some "bypass" -> `Bypass
+          | _ -> `Reuse);
+        timeout_seconds =
+          (match json_member "timeout_seconds" j with
+          | `Int t -> t
+          | _ -> 90 * 60);
+      }
+  | _ -> Error "assignment: missing execution id"
+
+let json_of_execution_result (r : execution_result) =
+  `Assoc
+    [
+      ("outcome", str (string_of_execution_outcome r.outcome));
+      ("cells_passed", `Int r.cells_passed);
+      ("cells_failed", `Int r.cells_failed);
+      ("detail", opt_str r.detail);
+    ]
+
+let execution_result_of_json j =
+  match
+    Option.bind (json_str (json_member "outcome" j)) execution_outcome_of_string
+  with
+  | None -> Error "execution result: bad `outcome`"
+  | Some outcome ->
+    let int k = match json_member k j with `Int i -> i | _ -> 0 in
+    Ok
+      {
+        outcome;
+        cells_passed = int "cells_passed";
+        cells_failed = int "cells_failed";
+        detail = json_str (json_member "detail" j);
+      }
+
+(* Wire shape for post_events: the agent sends [{seq, ts, body}]; run_id and
+   execution come from the AUTHENTICATED execution id, never from the payload
+   (the bench machine is treated as compromisable -- it must not be able to
+   write into another run's stream). *)
+let event_of_wire ~(id : execution_id) j =
+  match (json_member "seq" j, json_str (json_member "ts" j)) with
+  | `Int seq, Some ts ->
+    Ok
+      {
+        seq;
+        ts;
+        run_id = id.run_id;
+        execution = id.execution;
+        body = json_member "body" j;
+      }
+  | _ -> Error "event: missing seq/ts"
+
+let json_of_event (e : event) =
+  `Assoc
+    [
+      ("seq", `Int e.seq);
+      ("ts", str e.ts);
+      ("run_id", str e.run_id);
+      ("execution", `Int e.execution);
+      ("body", e.body);
     ]

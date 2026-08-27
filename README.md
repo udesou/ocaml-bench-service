@@ -12,13 +12,15 @@ contract and viewer. It deliberately reimplements none of them.
 
 > **Status: nothing is measured yet.** What works today is the front half,
 > end to end and over the wire: `bench-cli submit "/bench …"` reaches the
-> `bench-serve` daemon over Cap'n Proto — allowlist and roles, grammar,
+> `bench-serve` daemon over Cap'n Proto -- allowlist and roles, grammar,
 > validation, GitHub resolution (PR head, merge base, release tags), cost
-> cap — and lands as a run-spec directory in a file-backed queue, with
+> cap -- and lands as a run-spec directory in a file-backed queue, with
 > `status`/`list`/`cancel` working against it, plus a GitHub Action
-> ([bot/](bot/)) that does the same from a `/bench` PR comment. Nothing
-> drains that queue yet: the bench agent (API B) is the next piece of work.
-> See [Roadmap](#roadmap).
+> ([bot/](bot/)) that does the same from a `/bench` PR comment. The bench
+> agent (`bench-agent`, API B) drains that queue over the same wire: claim,
+> heartbeat with cancellation, events, artifact upload, finish, leases. Its
+> executor is still a stub: it walks the whole protocol but runs no
+> benchmark yet. See [Roadmap](#roadmap).
 
 ## What works today
 
@@ -45,7 +47,7 @@ bench-gen spec  --comment "/bench" \
 | file | what it is |
 |---|---|
 | `<id>.yml` | a running-ng config |
-| `<id>.runspec.json` | the **run spec** — config inline, environment, pinned source refs, command, artifacts to fetch, limits |
+| `<id>.runspec.json` | the **run spec** -- config inline, environment, pinned source refs, command, artifacts to fetch, limits |
 
 The run spec is documented in [docs/RUNSPEC.md](docs/RUNSPEC.md); read that before
 writing anything that consumes it. `--format json` prints it instead of the
@@ -56,7 +58,7 @@ running-ng's own `validate()` and `validate_tags()`.
 
 The transport is **Cap'n Proto** (Q15): the Request API stays an OCaml module
 signature (`lib/api.ml`), `rpc/bench_api.capnp` is its wire schema, and a
-token is a **capability file** — `bench-serve` writes `<login>.cap` for every
+token is a **capability file** -- `bench-serve` writes `<login>.cap` for every
 configured login (plus `bot.cap`) at startup, and handing someone their file
 is how access is granted. There is no `--login` anywhere: the capability *is*
 the identity, and the role (user/admin) is still derived server-side from
@@ -74,7 +76,7 @@ bench-cli help                # the /bench reference, served by the server
 ```
 
 `bench-cli` is the thin client (Q13): it parses nothing of the grammar and
-renders nothing — it sends the raw command and prints whatever markdown comes
+renders nothing -- it sends the raw command and prints whatever markdown comes
 back. `/bench help` and `/bench cancel <id>` come back as **Answered**
 outcomes: the server acts and replies, so a bot can post the result verbatim
 without understanding it. The PR bot ([bot/](bot/)) is the same client run
@@ -85,26 +87,33 @@ plain `git`, no API tokens): release tags and branches for `vs=`, the PR head
 via `refs/pull/N/head`, and the merge-base baseline in a local git cache.
 `--resolver offline` restricts to versions and commit shas for hermetic use.
 
-Every accepted run becomes a directory under `<state-dir>/runs/<run_id>/` —
+Every accepted run becomes a directory under `<state-dir>/runs/<run_id>/` --
 `meta.json` (the index record), `request.json` (who asked, when, verbatim),
-`runspec.json` and the generated config. That directory *is* the queue row;
-the future bench agent claims work by draining it. Submissions are
+`runspec.json` and the generated config. That directory *is* the queue row:
+`bench-agent` on the bench machine claims it over Cap'n Proto (the agent
+dials out; the server never connects to a machine), heartbeats while it
+works (the reply is how a cancel reaches the machine), posts progress
+events, uploads artifacts into the same directory, and reports finish. A
+claim starts a lease: an agent that stops heartbeating is presumed dead and
+the run becomes claimable again as the next execution. Submissions are
 deduplicated by `(login, normalized command)` while a run is active, users
 are capped to a few active runs, and machines can be drained by admins.
 
-Still deliberately missing: run keys (so no result reuse yet) and anything
-that executes — the queue's far side is API B, the agent.
+Still deliberately missing: run keys (so no result reuse yet) and the REAL
+executor -- the agent's stage 1 executor is a stub that exercises the
+protocol without running a benchmark. Provisioning, running-ng under a
+timeout, and collection per the spec's globs are the next piece.
 
 The **webview** is the public runs index (pkgeval-reports style): one static,
 self-contained page (`webview/index.html`) polling `runs.json`, a snapshot of
 every §8 meta record that `bench-serve` rewrites on each state change.
-`scripts/webview.sh [port]` serves it with python's http.server — no sudo, no
+`scripts/webview.sh [port]` serves it with python's http.server -- no sudo, no
 nginx. Browsers cannot speak capnp, so files-over-HTTP is deliberately the
 webview's read path; when the store (API C) lands, it takes over both the
 files and their durability, and per-run dashboard links go live (until then
 the index shows an honest "pending agent" instead of dead links).
 
-Standing a server up (a laptop now, a VPS later — the service moves with its
+Standing a server up (a laptop now, a VPS later -- the service moves with its
 state directory, not with code changes) is `scripts/server-setup.sh` +
 `scripts/serve.sh` + `scripts/webview.sh`; the whole recipe, including wiring
 the fork's bot, is in [docs/DEPLOY.md](docs/DEPLOY.md).
@@ -119,7 +128,7 @@ Most of the work here is not parsing. It is encoding the rules that otherwise
 fail **silently**, so that a bad request is rejected in a second rather than
 producing plausible, wrong numbers an hour later:
 
-- **Compilers are pinned to commits.** A ref like `trunk` is refused outright —
+- **Compilers are pinned to commits.** A ref like `trunk` is refused outright --
   two runs labelled "trunk" must be the same commit or they are not comparable.
 - **Runtime names carry the sha**, because running-ng provisions the switch
   `running-ng-<runtime name>` and treats it as the compiler cache. Naming decides
@@ -136,8 +145,8 @@ producing plausible, wrong numbers an hour later:
   machine that must run serially; a request over the limit is refused with the
   estimate and how to shrink it. Only an admin can force past the cap.
 
-Rejection messages are treated as part of the product — they get posted to a pull
-request verbatim — so the test suite asserts on their exact wording.
+Rejection messages are treated as part of the product -- they get posted to a pull
+request verbatim -- so the test suite asserts on their exact wording.
 
 ## The `/bench` grammar
 
@@ -161,7 +170,7 @@ request verbatim — so the test suite asserts on their exact wording.
 The baseline defaults to the PR's merge base, so a bare `/bench` answers the
 question people actually have: *does this change performance?*
 
-The repetition key is `invocations=` — each one runs every benchmark in a fresh
+The repetition key is `invocations=` -- each one runs every benchmark in a fresh
 process, which is what running-ng's `invocations:` means; "iterations" is not a
 word this service uses, and the old spelling gets a pointer to the new one.
 
@@ -184,9 +193,9 @@ from repository permissions.
 There are two roles. **Users** (the allowlist) submit, watch, and cancel their
 own runs. **Admins** (the `admins` list) additionally operate the service; only
 they may spend other people's time with `force=true` (past the cost cap) or
-`priority=top` (front of the queue). Identity is a GitHub login everywhere —
+`priority=top` (front of the queue). Identity is a GitHub login everywhere --
 the bot asserts the commenter it verified; the CLI will map bearer tokens to
-logins — so the allowlist and the audit trail stay uniform.
+logins -- so the allowlist and the audit trail stay uniform.
 
 ## Build and test
 
@@ -205,16 +214,16 @@ make check           # all three
 
 You also need `python3` (with PyYAML), a checkout of running-ng, which
 `make live` reads, and the `capnp` schema compiler (the `capnproto` system
-package; on machines without sudo, build it from source into `~/.local` — the
+package; on machines without sudo, build it from source into `~/.local` -- the
 Makefile puts `~/.local/bin` on PATH). Config merge rules, tag filtering and validation are answered
-by running-ng itself through `scripts/rng_helper.py` — the single bridge to it —
+by running-ng itself through `scripts/rng_helper.py` -- the single bridge to it --
 rather than reimplemented here, because two implementations of the same implicit
 schema is exactly how this kind of pipeline drifts.
 
 `make test` runs against snapshots in `test/fixtures/`, so it fails only when
 this repo changes. `make live` generates against a pinned running-ng ref and
 pushes each config through running-ng's real validators, so it fails when the
-benchmark definitions move. If live fails and test passes, run `make fixtures` —
+benchmark definitions move. If live fails and test passes, run `make fixtures` --
 see [test/fixtures/PROVENANCE](test/fixtures/PROVENANCE).
 
 Both read running-ng from a **pinned ref** rather than whatever branch a checkout
@@ -224,17 +233,17 @@ against an unmerged change.
 ## Configuration
 
 Copy `service.example.json` to `service.json` (gitignored) and edit it. It holds
-the bot account and the *name of the environment variable* carrying its token —
-never the token itself — the trigger allowlist, the admins, and the machine
+the bot account and the *name of the environment variable* carrying its token --
+never the token itself -- the trigger allowlist, the admins, and the machine
 registry. All of it is configuration so that swapping the bot account, adding
 someone to the allowlist, or registering a machine is an edit rather than a
 deploy.
 
 A machine entry is really a *slot*: `(host, OPAMROOT, benches directory)`. One
-slot means one concurrent run, because running-ng locks the opam root — which
+slot means one concurrent run, because running-ng locks the opam root -- which
 also happens to be the property that keeps measurements from overlapping. The
 registry carries no ssh coordinates: the server never connects to a bench
-machine — the agent on the machine dials out — so a machine is a name and
+machine -- the agent on the machine dials out -- so a machine is a name and
 paths, not a transport.
 
 ## Repository layout
@@ -246,6 +255,7 @@ paths, not a transport.
 | `lib/resolver.ml` | user input → pinned runtimes: releases, branches, PR heads, merge bases (plain git) |
 | `rpc/` | the Cap'n Proto adapter: the schema and the service/client glue |
 | `bin/bench_serve.ml` | the server daemon; writes the capability files |
+| `bin/bench_agent.ml` | the bench machine daemon (API B); stage 1: stub executor |
 | `bot/` | the GitHub Action for `/bench` PR comments, and its setup notes |
 | `webview/`, `scripts/webview.sh` | the public runs index: a static page over `runs.json` |
 | `scripts/serve.sh`, `docs/DEPLOY.md` | one deployment = one env file; the move-hosts recipe |
@@ -268,14 +278,18 @@ paths, not a transport.
    queue.~~ **Done.**
 4. ~~Wire it: Cap'n Proto transport with capability-file auth, `bench-cli`,
    GitHub resolution (PR head, merge base, tags, branches), and the
-   `/bench`-comment Action for the fork.~~ **Done** — still to come here:
+   `/bench`-comment Action for the fork.~~ **Done** -- still to come here:
    result reuse by run key (`lib/run_key.ml`), and the run-completion comment
    (needs step 5).
 5. **Run it.** An agent on the bench machine that *dials out* to claim work
-   from the queue (the server never connects to a machine): check out the
-   pinned sources, provision or reuse compiler switches, run under a timeout
-   in its own process group, and upload artifacts — on failure as well as
-   success. Leases so a restart cannot lose an hour of work.
+   from the queue (the server never connects to a machine). The execution
+   protocol is **done**: claim/heartbeat/events/upload/finish over capnp
+   with per-machine capabilities, leases so a dead agent cannot lose the
+   queue, cancellation via the heartbeat reply, requeue. Still to come: the
+   real executor -- check out the pinned sources, provision or reuse
+   compiler switches per the recorded provenance, run running-ng under a
+   timeout in its own process group, and collect artifacts on failure as
+   well as success.
 6. **Show it.** Results published as data-contract artifacts and rendered by the
    dashboard, with a regression judgement that accounts for machine noise, and
    the summary comment posted back to the PR.

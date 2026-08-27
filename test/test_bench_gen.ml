@@ -1343,6 +1343,312 @@ let test_server () =
            metas)
   | Error e -> fail "list: %s" (markdown e)
 
+(* --- 7. the execution side (API B, §6.2) ----------------------------------- *)
+
+(* The same injected deps, plus an "agent": direct calls to the execution
+   functions with ~machine as the transport-proven identity.  Covers the
+   claim/heartbeat/finish protocol, the requeue-and-reclaim path, and the
+   places a compromisable bench machine must be stopped (foreign executions,
+   dirty artifact paths, server-owned files). *)
+let test_execution () =
+  let state_dir =
+    Filename.concat
+      (Filename.get_temp_dir_name ())
+      (Printf.sprintf "bench-exec-test-%d-%d" (Unix.getpid ())
+         (int_of_float (Unix.gettimeofday () *. 1000.) mod 100000))
+  in
+  let deps =
+    {
+      Server.service = service_config;
+      facts;
+      sweepable;
+      base_include = "/base/macro_base.yml";
+      program_count = (fun ~tags:_ -> Ok 20);
+      resolver = Resolver.offline;
+      sources = [];
+      pin_config = [];
+      service_version = "test";
+      validate_pin = (fun _ ~commit:_ -> Ok ());
+      on_bump = ignore;
+      state_dir;
+      base_url = "http://bench.test";
+      max_active_per_user = 5;
+    }
+  in
+  let user = { Api.login = "udesou"; role = Api.User } in
+  let admin = { Api.login = "admin-person"; role = Api.User } in
+  let vs = "vs=5.5.0,c0f8c8ceef751fb3a99652d3d52399db3d1c2aae" in
+  let submit ~origin cmd =
+    match
+      Server.submit deps user
+        { Api.command = cmd; origin = { Api.kind = Api.Cli; id = origin } }
+    with
+    | Ok (Api.Accepted a) -> a
+    | Ok _ -> failwith "expected Accepted"
+    | Error e -> failwith ("submit: " ^ e.Api.error_markdown)
+  in
+  let a = submit ~origin:"cli:x1" ("/bench tag=small invocations=1 " ^ vs) in
+  let run_id = a.Api.run_id in
+
+  (* identity: the machine name is the capability's, and only registered
+     machines exist *)
+  (match Server.claim deps ~machine:"unregistered" with
+  | Error e ->
+    check_true ~name:"claim from an unregistered machine is refused"
+      (e.Api.code = Api.Unknown_machine)
+  | Ok _ -> fail "unregistered machine claimed work");
+
+  (* the claim: spec + execution-scoped directives *)
+  let id =
+    match Server.claim deps ~machine:"monolith" with
+    | Error e -> failwith ("claim: " ^ e.Api.error_markdown)
+    | Ok None -> failwith "claim returned no work"
+    | Ok (Some asg) ->
+      check_true ~name:"claim hands out the queued run"
+        (asg.Api.id.Api.run_id = run_id);
+      check_true ~name:"first attempt is execution 1"
+        (asg.Api.id.Api.execution = 1);
+      check_true ~name:"a plain run reuses caches" (asg.Api.caches = `Reuse);
+      check_true ~name:"the timeout has the 90-minute floor"
+        (asg.Api.timeout_seconds >= 90 * 60);
+      check_eq_opt ~name:"the assignment carries the spec verbatim"
+        ~expected:(Some run_id)
+        ~actual:(jstr (member "run_id" asg.Api.spec));
+      asg.Api.id
+  in
+  (match Server.status deps user ~run_id with
+  | Ok st ->
+    check_true ~name:"a claimed run is running" (st.Api.state = Api.Running);
+    check_true ~name:"status shows the execution phase"
+      (match st.Api.progress with
+      | Some p -> p.Api.phase = Api.Preparing && p.Api.execution = 1
+      | None -> false)
+  | Error e -> fail "status: %s" (markdown e));
+  (match Server.claim deps ~machine:"monolith" with
+  | Ok None -> ok "one slot per machine: a live lease blocks the next claim"
+  | _ -> fail "second claim should find the slot taken");
+  (match Server.machines deps admin with
+  | Ok [ m ] ->
+    check_eq_opt ~name:"machines shows what the slot is busy with"
+      ~expected:(Some run_id) ~actual:m.Api.busy_with
+  | _ -> fail "machines should list exactly monolith");
+
+  (* the heartbeat is the control channel *)
+  (match Server.heartbeat deps ~machine:"monolith" id Api.Measuring with
+  | Ok `Continue -> ok "heartbeat replies Continue while unmolested"
+  | _ -> fail "heartbeat should Continue");
+  (match
+     Server.heartbeat deps ~machine:"monolith"
+       { id with Api.execution = 99 } Api.Measuring
+   with
+  | Ok `Cancel -> ok "a superseded execution is told to stop"
+  | _ -> fail "stale heartbeat should get Cancel");
+  (match Server.cancel deps user ~run_id with
+  | Ok () -> (
+    match Server.status deps user ~run_id with
+    | Ok st ->
+      check_true ~name:"cancelling a running run only signals it"
+        (st.Api.state = Api.Running)
+    | Error e -> fail "status: %s" (markdown e))
+  | Error e -> fail "cancel running: %s" (markdown e));
+  (match Server.heartbeat deps ~machine:"monolith" id Api.Measuring with
+  | Ok `Cancel -> ok "the cancel order arrives as the heartbeat reply"
+  | _ -> fail "heartbeat after cancel should say Cancel");
+
+  (* events: appended under the AUTHENTICATED identity *)
+  let ev body =
+    { Api.seq = 1; ts = "2026-08-27T00:00:00Z"; run_id = "forged";
+      execution = 42; body }
+  in
+  (match
+     Server.post_events deps ~machine:"monolith" id
+       [ ev (`Assoc [ ("type", `String "phase") ]) ]
+   with
+  | Ok () -> (
+    match Server.events deps user ~run_id ~since:0 with
+    | Ok [ e ] ->
+      check_true ~name:"events land under the authenticated run and execution"
+        (e.Api.run_id = run_id && e.Api.execution = 1)
+    | Ok _ -> fail "expected exactly one event"
+    | Error e -> fail "events: %s" (markdown e))
+  | Error e -> fail "post_events: %s" (markdown e));
+
+  (* artifacts: the run directory is the v1 bundle; the agent cannot escape
+     it or touch the server's own records *)
+  (match
+     Server.upload deps ~machine:"monolith" id
+       { Api.path = "contract/manifest.json"; content = "{}" }
+   with
+  | Ok () ->
+    check_true ~name:"uploads land in the bundle"
+      (Sys.file_exists
+         (Filename.concat
+            (Filename.concat (Filename.concat state_dir "runs") run_id)
+            "contract/manifest.json"))
+  | Error e -> fail "upload: %s" (markdown e));
+  (match
+     Server.upload deps ~machine:"monolith" id
+       { Api.path = "../escape"; content = "x" }
+   with
+  | Error _ -> ok "path traversal is refused"
+  | Ok () -> fail "an upload escaped the run directory");
+  (match
+     Server.upload deps ~machine:"monolith" id
+       { Api.path = "meta.json"; content = "{}" }
+   with
+  | Error e ->
+    check_true ~name:"server-owned files are not writable by the agent"
+      (e.Api.code = Api.Forbidden)
+  | Ok () -> fail "the agent overwrote meta.json");
+
+  (* finish: the aborted execution closes the run as cancelled *)
+  (match
+     Server.finish deps ~machine:"monolith" id
+       { Api.outcome = `Aborted; cells_passed = 0; cells_failed = 0;
+         detail = None }
+   with
+  | Ok () -> (
+    match Server.status deps user ~run_id with
+    | Ok st ->
+      check_true ~name:"an aborted execution lands as cancelled"
+        (st.Api.state = Api.Cancelled)
+    | Error e -> fail "status: %s" (markdown e))
+  | Error e -> fail "finish: %s" (markdown e));
+
+  (* requeue puts the SAME run (same spec, same pins) back on the queue; the
+     next claim is attempt 2 *)
+  (match Server.requeue deps user ~run_id with
+  | Error e ->
+    check_true ~name:"requeue is admin-only" (e.Api.code = Api.Forbidden)
+  | Ok () -> fail "a user requeued a run");
+  (match Server.requeue deps admin ~run_id with
+  | Ok () -> ()
+  | Error e -> fail "requeue: %s" (markdown e));
+  let id2 =
+    match Server.claim deps ~machine:"monolith" with
+    | Ok (Some asg) ->
+      check_true ~name:"a requeued run claims as execution 2"
+        (asg.Api.id = { Api.run_id; execution = 2 });
+      asg.Api.id
+    | _ -> failwith "claim after requeue"
+  in
+  (match
+     Server.finish deps ~machine:"monolith" id
+       { Api.outcome = `Done; cells_passed = 1; cells_failed = 0;
+         detail = None }
+   with
+  | Error e ->
+    check_true ~name:"a superseded execution cannot finish the run"
+      (e.Api.code = Api.Forbidden)
+  | Ok () -> fail "execution 1 finished a run leased to execution 2");
+  (match
+     Server.finish deps ~machine:"monolith" id2
+       { Api.outcome = `Done; cells_passed = 20; cells_failed = 1;
+         detail = None }
+   with
+  | Ok () -> (
+    match Server.list deps user Api.no_filter { Api.limit = 5; after = None } with
+    | Ok metas -> (
+      match List.find_opt (fun (m : Api.meta) -> m.Api.run_id = run_id) metas with
+      | Some m ->
+        check_true ~name:"finish records state, cells and duration"
+          (m.Api.state = Api.Done && m.Api.cells_passed = 20
+          && m.Api.cells_failed = 1
+          && m.Api.duration_seconds <> None
+          && m.Api.started_at <> None)
+      | None -> fail "finished run missing from list")
+    | Error e -> fail "list: %s" (markdown e))
+  | Error e -> fail "finish 2: %s" (markdown e));
+
+  (* rerun's cache bypass travels as the assignment directive *)
+  let b = submit ~origin:"cli:x2" ("/bench rerun tag=small " ^ vs) in
+  (match Server.claim deps ~machine:"monolith" with
+  | Ok (Some asg) ->
+    check_true ~name:"rerun claims with the cache-bypass flag"
+      (asg.Api.id.Api.run_id = b.Api.run_id && asg.Api.caches = `Bypass)
+  | _ -> fail "rerun claim");
+
+  (* a dead agent: the lease expires and the run becomes claimable again *)
+  (match Server.read_exec deps b.Api.run_id with
+  | Some e ->
+    Server.write_exec deps b.Api.run_id
+      { e with Server.last_heartbeat_epoch = 0. }
+  | None -> fail "no execution record to age");
+  (match Server.claim deps ~machine:"monolith" with
+  | Ok (Some asg) ->
+    check_true ~name:"an expired lease is reclaimed as the next execution"
+      (asg.Api.id = { Api.run_id = b.Api.run_id; execution = 2 })
+  | _ -> fail "expired lease should be reclaimed");
+
+  (* a dead agent on a CANCELLED run: claim closes it instead of re-running *)
+  (match Server.cancel deps user ~run_id:b.Api.run_id with
+  | Ok () -> ()
+  | Error e -> fail "cancel for close-out: %s" (markdown e));
+  (match Server.read_exec deps b.Api.run_id with
+  | Some e ->
+    Server.write_exec deps b.Api.run_id
+      { e with Server.last_heartbeat_epoch = 0. }
+  | None -> fail "no execution record to age (2)");
+  (match Server.claim deps ~machine:"monolith" with
+  | Ok None -> (
+    match Server.status deps user ~run_id:b.Api.run_id with
+    | Ok st ->
+      check_true ~name:"a dead cancel-requested run closes as cancelled"
+        (st.Api.state = Api.Cancelled)
+    | Error e -> fail "status: %s" (markdown e))
+  | _ -> fail "nothing else should be claimable");
+
+  (* drain stops NEW work *)
+  let c = submit ~origin:"cli:x3" ("/bench tag=large " ^ vs) in
+  ignore c;
+  (match Server.drain deps admin ~machine:"monolith" with
+  | Ok () -> (
+    match Server.claim deps ~machine:"monolith" with
+    | Ok None -> ok "a drained machine gets no new work"
+    | _ -> fail "drained machine claimed work")
+  | Error e -> fail "drain: %s" (markdown e));
+  (match Server.undrain deps admin ~machine:"monolith" with
+  | Ok () -> ()
+  | Error e -> fail "undrain: %s" (markdown e));
+
+  (* cache reporting: visible to evict (delivery is a raised question) *)
+  (match Server.evict deps admin ~machine:"monolith" Api.All_caches with
+  | Error e ->
+    check_contains ~name:"evict before any report says so"
+      ~needle:"No agent has reported" e.Api.error_markdown
+  | Ok _ -> fail "evict succeeded with no agent");
+  let entry =
+    Api.Switch
+      {
+        runtime_name = "ocaml-5.5.0";
+        provenance =
+          {
+            Api.compiler_sha = "c0f8c8ceef751fb3a99652d3d52399db3d1c2aae";
+            configure_args = "";
+            dune_version = "3.22.1";
+            opam_repo_commit = "abc";
+            built_at = "2026-08-27T00:00:00Z";
+            build_id = "b-1";
+          };
+        size_bytes = 1_000_000L;
+        last_used = "2026-08-27T00:00:00Z";
+      }
+  in
+  (match Server.report_caches deps ~machine:"monolith" [ entry ] with
+  | Ok () -> (
+    match Server.evict deps admin ~machine:"monolith" Api.All_caches with
+    | Error e ->
+      check_contains ~name:"evict sees the reported caches"
+        ~needle:"1 cache entry" e.Api.error_markdown
+    | Ok _ -> fail "evict is not implemented; it should refuse")
+  | Error e -> fail "report_caches: %s" (markdown e));
+  (* the report round-trips through its JSON *)
+  match Server.reported_caches deps "monolith" with
+  | Some (_, [ Api.Switch s ]) ->
+    check_true ~name:"cache entries round-trip"
+      (s.provenance.Api.build_id = "b-1" && s.size_bytes = 1_000_000L)
+  | _ -> fail "reported caches did not round-trip"
+
 let test_help () =
   let h =
     Help.render ~facts ~sweepable ~machines:[ "monolith" ] ~cap_seconds:7200.
@@ -1382,6 +1688,7 @@ let () =
   test_github_resolver ();
   test_pins ();
   test_server ();
+  test_execution ();
   test_help ();
   ok "done";
   Printf.printf "\n%d checks, %d failures\n" !checks !failures;

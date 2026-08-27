@@ -353,6 +353,21 @@ let () =
   in
   let bot_id = Capnp_rpc_unix.Vat_config.derived_id config "bot" in
   Capnp_rpc_net.Restorer.Table.add services bot_id (Rpc.bench_bot d);
+  (* One agent capability per registered machine (§6.2): the file IS the
+     machine's identity, exactly as <login>.cap is a user's.  It lives on the
+     bench machine, which is treated as compromisable -- an agent capability
+     can only claim/report its own machine's work, never submit or admin. *)
+  let agent_ids =
+    List.map
+      (fun name ->
+        let id =
+          Capnp_rpc_unix.Vat_config.derived_id config ("agent:" ^ name)
+        in
+        Capnp_rpc_net.Restorer.Table.add services id
+          (Rpc.agent_api d ~machine:name);
+        (name, id))
+      (Service_config.machine_names d.Server.service)
+  in
   let restore = Capnp_rpc_net.Restorer.of_table services in
   let vat = Capnp_rpc_unix.serve ~sw ~restore config in
   let save id path =
@@ -365,6 +380,10 @@ let () =
     (fun (login, id) -> save id (Filename.concat caps_dir (login ^ ".cap")))
     ids;
   save bot_id (Filename.concat caps_dir "bot.cap");
+  List.iter
+    (fun (name, id) ->
+      save id (Filename.concat caps_dir ("agent-" ^ name ^ ".cap")))
+    agent_ids;
   Printf.printf "bench-serve: listening on %s (resolver: %s, queue: %s)\n%!"
     listen o.resolver
     (Filename.concat o.state_dir "runs");

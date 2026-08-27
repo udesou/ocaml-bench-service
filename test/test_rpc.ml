@@ -280,8 +280,113 @@ let () =
       (e.Api.code = Api.Forbidden)
   | Ok _ -> fail "an unlisted commenter should be refused");
 
+  (* --- the agent path (API B) ---------------------------------------------- *)
+  (* A fresh queue, one submitted run, and the whole execution protocol over
+     the adapter: the same generated code and JSON payloads the wire uses. *)
+  let d_agent = deps () in
+  let api2 = Rpc.bench_api d_agent ~login:"udesou" in
+  let agent = Rpc.agent_api d_agent ~machine:"monolith" in
+  let foreign = Rpc.agent_api d_agent ~machine:"not-registered" in
+  let run_id =
+    match Rpc.Client.submit api2 ~command ~origin:(cli_origin "a") with
+    | Ok j when jstr (member "outcome" j) = Some "accepted" ->
+      Option.value (jstr (member "run_id" j)) ~default:""
+    | _ -> failwith "agent-path submit"
+  in
+  (match Rpc.Agent_client.claim foreign with
+  | Error e ->
+    check_true ~name:"an unregistered machine's capability is refused"
+      (e.Api.code = Api.Unknown_machine)
+  | Ok _ -> fail "a foreign agent capability claimed work");
+  (match Rpc.Agent_client.claim agent with
+  | Ok (Some a) ->
+    check_true ~name:"the assignment travels the wire"
+      (a.Api.id = { Api.run_id; execution = 1 }
+      && a.Api.caches = `Reuse
+      && a.Api.timeout_seconds >= 90 * 60
+      && jstr (member "run_id" a.Api.spec) = Some run_id);
+    let id = a.Api.id in
+    check_true ~name:"heartbeat over the wire Continues"
+      (Rpc.Agent_client.heartbeat agent ~id ~phase:Api.Measuring
+      = Ok `Continue);
+    (match
+       Rpc.Agent_client.post_events agent ~id
+         [
+           {
+             Api.seq = 1;
+             ts = "2026-08-27T00:00:00Z";
+             run_id = "ignored";
+             execution = 9;
+             body = `Assoc [ ("type", `String "phase") ];
+           };
+         ]
+     with
+    | Ok () -> (
+      match Rpc.Client.events api2 ~run_id ~since:0 with
+      | Ok (`List [ e ]) ->
+        check_true ~name:"events ride the wire under the authenticated id"
+          (jstr (member "run_id" e) = Some run_id
+          && member "execution" e = `Int 1)
+      | _ -> fail "expected one event back")
+    | Error e -> fail "post_events: %s" e.Api.error_markdown);
+    (match
+       Rpc.Agent_client.upload agent ~id
+         { Api.path = "report.md"; content = "# hi\n" }
+     with
+    | Ok () -> ()
+    | Error e -> fail "upload: %s" e.Api.error_markdown);
+    (match
+       Rpc.Agent_client.upload agent ~id
+         { Api.path = "meta.json"; content = "{}" }
+     with
+    | Error e ->
+      check_true ~name:"server-owned refusal survives the wire"
+        (e.Api.code = Api.Forbidden)
+    | Ok () -> fail "meta.json overwritten over the wire");
+    (match
+       Rpc.Agent_client.finish agent ~id
+         {
+           Api.outcome = `Done;
+           cells_passed = 3;
+           cells_failed = 0;
+           detail = None;
+         }
+     with
+    | Ok () -> (
+      match Rpc.Client.status api2 ~run_id with
+      | Ok j ->
+        check_true ~name:"finish lands as done over the wire"
+          (jstr (member "state" j) = Some "done")
+      | Error e -> fail "status after finish: %s" e.Api.error_markdown)
+    | Error e -> fail "finish: %s" e.Api.error_markdown)
+  | Ok None -> fail "agent claim found no work"
+  | Error e -> fail "agent claim: %s" e.Api.error_markdown);
+  (match
+     Rpc.Agent_client.report_caches agent
+       [
+         Api.Binaries
+           {
+             runtime_name = "ocaml-5.5.0";
+             benches_commit = "2222222222222222222222222222222222222222";
+             switch_build_id = "b-1";
+             size_bytes = 42L;
+             last_used = "2026-08-27T00:00:00Z";
+           };
+       ]
+   with
+  | Ok () ->
+    check_true ~name:"cache reports round-trip the wire"
+      (match Server.reported_caches d_agent "monolith" with
+      | Some (_, [ Api.Binaries b ]) ->
+        b.switch_build_id = "b-1" && b.size_bytes = 42L
+      | _ -> false)
+  | Error e -> fail "report_caches: %s" e.Api.error_markdown);
+
   Capnp_rpc.Capability.dec_ref api;
   Capnp_rpc.Capability.dec_ref nobody;
   Capnp_rpc.Capability.dec_ref bot;
+  Capnp_rpc.Capability.dec_ref api2;
+  Capnp_rpc.Capability.dec_ref agent;
+  Capnp_rpc.Capability.dec_ref foreign;
   Printf.printf "\n%d checks, %d failures\n" !checks !failures;
   if !failures > 0 then exit 1

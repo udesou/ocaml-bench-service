@@ -44,10 +44,12 @@ let source ~name ~repo ~commit () = { name; repo; commit }
    estimate by this much is wedged; the floor covers cold compiler builds,
    which the estimate deliberately excludes because they are cached and highly
    variable. *)
-let timeout_seconds ~(cost : Cost.t) =
+let timeout_of_estimate ~seconds =
   let floor_s = 90 * 60 in
-  let scaled = int_of_float (cost.seconds *. 2.5) in
-  max floor_s scaled
+  max floor_s (int_of_float (float_of_int seconds *. 2.5))
+
+let timeout_seconds ~(cost : Cost.t) =
+  timeout_of_estimate ~seconds:(int_of_float cost.seconds)
 
 let str s = `String s
 let opt_str = function None -> `Null | Some s -> `String s

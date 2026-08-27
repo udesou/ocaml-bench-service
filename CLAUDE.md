@@ -1,8 +1,8 @@
-# CLAUDE.md — working notes for agents & contributors on `ocaml-bench-service`
+# CLAUDE.md -- working notes for agents & contributors on `ocaml-bench-service`
 
 Auto-loaded context for Claude Code (and orientation for humans). `README.md` is
 the human-facing overview; this file holds the internals and the hard-won
-details. Everything needed to work on this repo is in the repo — no external
+details. Everything needed to work on this repo is in the repo -- no external
 document is required reading.
 
 ## What this is
@@ -15,8 +15,10 @@ document is required reading.
   (data contract + ingestor + dashboard). Paths to their checkouts are
   configuration (`RUNNING_NG_REPO`, `VOCAB`, the machine registry), never
   assumptions.
-- **Request generation only** so far: `bench-gen`, comment → run spec. Nothing
-  schedules, ssh's, or measures yet. `README.md` has the roadmap.
+- Requests, queueing and the execution PROTOCOL so far: comment → run spec →
+  queue → claimed by `bench-agent` over capnp. Nothing measures yet: the
+  agent's executor is a stage-1 stub, and nothing ever ssh's (the agent dials
+  out). `README.md` has the roadmap.
 
 ## Hard rules (do not violate)
 
@@ -41,78 +43,84 @@ document is required reading.
 
 ## Where things live
 
-- `lib/api.ml` — **the Request API (API A)**: the types and module signature
+- `lib/api.ml` -- **the Request API (API A)**: the types and module signature
   every requester (PR bot, CLI, future web form) speaks. Types the architecture
   document defines are transcribed verbatim; types it references without
   defining are marked PROVISIONAL in place. A change starts in the document,
   not here.
-- `lib/server.ml` — the request server: `Api.REQUEST_API` over the existing
+- `lib/server.ml` -- the request server: `Api.REQUEST_API` over the existing
   pipeline, with a **file-backed queue** (`<state>/runs/<run_id>/` holding
   meta.json + request.json + runspec.json + config.yml; that directory IS the
-  queue row a future agent claims). Nothing executes — the module's header
-  states the exact scope. Transports wrap this module; do not fork a second
-  submit path.
-- `lib/resolver.ml` — user input → pinned runtimes. `Resolver.github` is the
+  queue row the agent claims), plus the EXECUTION side (`Api.EXECUTION_API`,
+  §6.2): claim/heartbeat/post_events/upload/finish/report_caches, keyed by the
+  transport-proven machine name, with `execution.json` per run as the lease
+  record. Transports wrap this module; do not fork a second submit path.
+- `bin/bench_agent.ml` -- the bench machine daemon (API B). Dials the server
+  with `agent-<machine>.cap`, claims, heartbeats (obeying a `Cancel` reply at
+  phase boundaries), posts events, uploads, finishes. STAGE 1: the executor is
+  a stub -- replace `execute` to make it real. Exits on a broken connection;
+  a supervisor loop restarts it.
+- `lib/resolver.ml` -- user input → pinned runtimes. `Resolver.github` is the
   server's whole GitHub dependency and it is only `git`: ls-remote for tags,
   branches and `refs/pull/N/head`, plus a bare cache repo for the merge base.
   No API, no token. `Resolver.offline` (versions + shas only) keeps tests and
   the live check hermetic.
-- `rpc/` — the Cap'n Proto adapter (Q15): `bench_api.capnp` (one method per
+- `rpc/` -- the Cap'n Proto adapter (Q15): `bench_api.capnp` (one method per
   REQUEST_API function) and `rpc.ml` (service + typed client). v1 wire
   encoding: record payloads travel as the lib/api.ml JSON, errors as the
   envelope JSON in the exception reason; promoting payloads to capnp structs
   is additive later. Building it needs the `capnp` system binary
   (~/.local/bin on this machine; the Makefile exports the PATH).
-- `bin/bench_serve.ml` — the daemon. Writes `<caps>/<login>.cap` per
+- `bin/bench_serve.ml` -- the daemon. Writes `<caps>/<login>.cap` per
   configured login + `bot.cap` at startup: the capability file IS the access
-  (and the identity — there is no --login anywhere).
-- `bot/` — the fork's GitHub Action: bot.cap + a prebuilt bench-cli, posts
+  (and the identity -- there is no --login anywhere).
+- `bot/` -- the fork's GitHub Action: bot.cap + a prebuilt bench-cli, posts
   back whatever markdown the server returns.
-- `lib/request.ml` — the comment grammar. Pure: no network, no knowledge of
+- `lib/request.ml` -- the comment grammar. Pure: no network, no knowledge of
   which tags exist, no cost decision, no roles (admin-only keys parse for
   everyone and are refused in Authz). Rejection messages are the product (they
   get posted to PRs verbatim), so they are asserted on in tests.
-- `lib/tag_alias.ml` — `small` → `small_run` etc. Unaliased names fall through,
+- `lib/tag_alias.ml` -- `small` → `small_run` etc. Unaliased names fall through,
   keeping feature tags (`bigarrays`, `effects`, …) reachable but undocumented.
-- `lib/facts.ml` — base-config facts, read from the bridge's JSON. Never parses
+- `lib/facts.ml` -- base-config facts, read from the bridge's JSON. Never parses
   YAML.
-- `lib/vocab.ml` — sweepable dimensions from `vocab.json`, minus a policy
+- `lib/vocab.ml` -- sweepable dimensions from `vocab.json`, minus a policy
   exclusion list (measurement infrastructure `re`/`md`, MMTk-only
   `plan`/`threads`).
-- `lib/variant.ml` — one side of the comparison. **`runtime_name` is the
+- `lib/variant.ml` -- one side of the comparison. **`runtime_name` is the
   compiler cache key** (running-ng provisions `running-ng-<runtime name>`), so it
   encodes the sha. Refuses an unresolved ref.
-- `lib/cost.ml` — the estimate and the 2 h cap. Calibrated at 30 s per
+- `lib/cost.ml` -- the estimate and the 2 h cap. Calibrated at 30 s per
   cell-iteration; replace with historical per-program timings when we have them.
-- `lib/gen.ml` — the generator. Emits config + env + cost + warnings.
-- `lib/service_config.ml` / `lib/authz.ml` — bot identity, allowlist + admins
+- `lib/gen.ml` -- the generator. Emits config + env + cost + warnings.
+- `lib/service_config.ml` / `lib/authz.ml` -- bot identity, allowlist + admins
   (roles), machine registry (no ssh: the agent dials out, the server never
   connects to a machine). `Authz.vet_request` is where `force=`/`priority=`
   are refused for non-admins.
-- `lib/help.ml` — `/bench help`, generated from facts + vocab.
-- `lib/run_key.ml` — the content identity of a measurement, for result reuse.
+- `lib/help.ml` -- `/bench help`, generated from facts + vocab.
+- `lib/run_key.ml` -- the content identity of a measurement, for result reuse.
   Computed by the server at submission; bench-gen emits `run_key: null` because
   it resolves no refs and knows no machine fingerprint.
-- `lib/runspec.ml` — the generator → agent interface, specified in
+- `lib/runspec.ml` -- the generator → agent interface, specified in
   `docs/RUNSPEC.md`. **Change both together.** Version 1 (nothing ever
-  shipped): describes only WHAT to measure — config inline, sources and
+  shipped): describes only WHAT to measure -- config inline, sources and
   runtimes pinned to SHAS by the server before dispatch
   (`Resolver.local_source`), and **nothing machine-side**: no paths, no env,
   no command line, no transport, no credentials. The agent derives all of
   that from its own config plus the spec (e.g. `RUNNING_TAG` from
   `selection.tags`); execution-scoped directives (rerun's cache bypass, the
   timeout) travel in the §6.2 assignment at claim time.
-- `lib/bridge.ml` — the only caller of python.
-- `scripts/rng_helper.py` — `facts` | `validate` | `tagfilter`.
-- `test/` — table tests against `test/fixtures/` snapshots.
-- `scripts/live_check.sh` — the same generation against a pinned running-ng ref
+- `lib/bridge.ml` -- the only caller of python.
+- `scripts/rng_helper.py` -- `facts` | `validate` | `tagfilter`.
+- `test/` -- table tests against `test/fixtures/` snapshots.
+- `scripts/live_check.sh` -- the same generation against a pinned running-ng ref
   (`origin/adding-ocaml-support`), validated through running-ng's own checks.
 
-## Gotchas (hard-won — don't rediscover)
+## Gotchas (hard-won -- don't rediscover)
 
 - **The user-facing repetition key is `invocations=`, never `iterations`.**
   It maps 1:1 onto running-ng's `invocations:` (fresh-process repetitions).
-  The old spelling is a special-cased rejection that points at the new key —
+  The old spelling is a special-cased rejection that points at the new key --
   not a "did you mean" (three edits away, the suggester will not fire).
 - **Admin-only keys parse for everyone and are refused in Authz.** The grammar
   stays pure and role-free; `Authz.vet_request` refuses `force=true` and
@@ -122,6 +130,26 @@ document is required reading.
   the LOGIN; the ROLE is re-derived from service.json's `admins` on every call
   (`Server.effective_auth`). A client self-declaring Admin gets what the
   config says.
+- **The agent capability is a MACHINE, and only that.** `agent-<name>.cap`
+  can claim/report its own machine's work and nothing else -- never submit,
+  never admin. Every per-execution call is guarded by (machine, execution)
+  against `execution.json`; a superseded agent gets `Cancel` from heartbeat
+  and `Forbidden` from writes. run_id/execution inside event payloads are
+  ignored -- the authenticated ones are used (the bench machine is treated as
+  compromisable).
+- **Uploads cannot touch server records.** Artifact paths must be clean and
+  relative (`Server.safe_rel_path`), and the `server_owned` list (meta.json,
+  request.json, runspec.json, config.yml, execution.json, events.ndjson) is
+  refused. The run directory doubles as the v1 store bundle (§8 layout);
+  finish's `Ok` IS the store confirmation.
+- **Cancelling a RUNNING run only signals it.** The server cannot reach the
+  machine (Q1), so cancel sets `cancel_requested` and the order travels as
+  the reply to the agent's next heartbeat; state stays Running until the
+  agent finishes with `Exec_aborted`. A dead cancel-requested run is closed
+  by the next claim sweep.
+- **Leases, not locks.** One slot per machine: a live lease blocks further
+  claims; no heartbeat for 15 min (`Server.lease_seconds`) makes the run
+  claimable again as execution N+1. Events count as heartbeats.
 - **Idempotency is checked against ACTIVE runs only.** `(origin id, normalized
   command)` deduplicates redeliveries while a run is queued/running; a repeat
   of a *completed* run is the run key's job (§8.1), which nothing computes yet.
@@ -139,7 +167,7 @@ document is required reading.
   server, Q13). Do not route them to the error envelope.
 - **The wire never carries a login for users.** The capability file is the
   identity; only `bot.cap` may assert one (the commenter GitHub verified).
-  CLI idempotency ids are rewritten server-side to `cli:<login>` in rpc.ml —
+  CLI idempotency ids are rewritten server-side to `cli:<login>` in rpc.ml --
   a client cannot dodge or forge the duplicate check.
 - **`comparisons:` in a running-ng config is `label`/`a`/`b` (+ `mode`), NOT the
   contract's `kind`/`over`/`baseline`/`variants`.** `contract/native.py::
@@ -147,19 +175,19 @@ document is required reading.
   the contract shape produces a config `validate()` rejects. Do not "standardise"
   this: comparisons are visualization metadata only (what *varies* is declared by
   `config_sweep:`), the a/b → contract translation is already lossless, and the
-  dashboard consumes only `inter`, treating a missing `kind` as inter — it
+  dashboard consumes only `inter`, treating a missing `kind` as inter -- it
   derives curves and heatmaps from which dimensions actually vary, and
   synthesises `inter` comparisons itself, so `intra`/`both` are unused rather
   than half-built. This was investigated and closed; do not reopen it without
   new evidence from the dashboard side.
-- **`a` is the BASELINE — the merge base, not the PR head.** `b` is
+- **`a` is the BASELINE -- the merge base, not the PR head.** `b` is
   `[PR head, …extras]`. `bench.js::sweepDeltaRows` reports "the % change of the
   variant relative to the baseline. Negative = variant is better (green)", so
   swapping the sides inverts every delta and makes green mean regression. In this
   repo that is carried by `Variant.role`: the `Baseline` variant becomes `a:`.
 - **`validate()` requires every runtime in `configs:` to be referenced by a
   comparison and vice versa.** So a single-runtime run must emit **no**
-  `comparisons:` block at all — not a self-comparison.
+  `comparisons:` block at all -- not a self-comparison.
 - **A sweep must define its modifier.** `s`/`o`/`M`/`m` are absent from
   `macro_base.yml`'s `modifiers:`; emitting only `config_sweep:` fails on an
   undefined modifier.
@@ -168,7 +196,7 @@ document is required reading.
   **3**, not 1, so the value is always emitted explicitly.
 - **`tag=` is not a config field.** It becomes `RUNNING_TAG`, consumed by
   `apply_tag_filter()`. This is why the deliverable is a run spec and not a YAML
-  file — a config alone does not describe the run. Several tags are allowed
+  file -- a config alone does not describe the run. Several tags are allowed
   (`tag=small,large`) and mean their **union**: that is apply_tag_filter's own
   comma-separated semantics, don't reimplement or second-guess it.
 - **`/bench cancel` requires an explicit run id** (from the run's
@@ -177,18 +205,18 @@ document is required reading.
 - **The macro-benches commit is part of run identity.** Binaries are cached as
   `<benchmark>-<runtime>` and the runtime name encodes only the *compiler* sha, so
   changing benchmark source does not invalidate a cached binary. `sources` in the
-  run spec carries both repos pinned to shas — resolved by the SERVER before
+  run spec carries both repos pinned to shas -- resolved by the SERVER before
   dispatch, never left as refs for the agent.
 - **The measurement modifier chain is derived, not hardcoded** (`Gen.modifier_chain`).
   running-ng #15 (`fb9751c`, on `adding-ocaml-support`) moved the sequential
-  `re`/`md` onto the benchmarks as a suite/program `ocamlrunparam:` field — five
-  macro suites declare `e=25,d=2` — so a generated config must **not** carry
+  `re`/`md` onto the benchmarks as a suite/program `ocamlrunparam:` field -- five
+  macro suites declare `e=25,d=2` -- so a generated config must **not** carry
   `re-N|md-M`: a config-string value is merged *under* the benchmark's, and
   emitting one reintroduces a global setting for every other suite. We detect
   this with `Facts.uses_ocamlrunparam` and emit `re`/`md` only for older
   branches. The **parallel** triple `re_par-22|md_par-8|pin_lavyek` did *not*
-  move — `macro_base.yml` still says a config enabling a lavyek suite MUST add
-  it, and without it olly drops events and `wall_time` goes negative — so it is
+  move -- `macro_base.yml` still says a config enabling a lavyek suite MUST add
+  it, and without it olly drops events and `wall_time` goes negative -- so it is
   emitted only when a lavyek suite has enabled programs (`Facts.par_chain_suites`).
   Today lavyek is empty, so a macro config is a bare `<runtime>|perf_grp1`.
 - **Modifier existence checks compare the NAME, not the token.** A config-string
@@ -216,7 +244,7 @@ document is required reading.
   and `make live` fail for reasons unrelated to this repo. Both default to
   `RUNNING_NG_REF=origin/adding-ocaml-support`. Note #15 was **squash**-merged,
   so `git merge-base --is-ancestor` on the original commit reports "not merged"
-  — check file content, not ancestry.
+  -- check file content, not ancestry.
 - **`make switch` builds a compiler and takes opam's root lock.** Never run it
   while a benchmark is running; `make check-idle` is the guard (and uses
   `[p]ython3` so pgrep does not match its own shell).
