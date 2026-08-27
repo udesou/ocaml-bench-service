@@ -18,9 +18,13 @@ resolves, queues, and **acknowledges** — the run directories it writes under
 scripts/server-setup.sh              # prerequisites, sibling clones, build
 cp service.example.json service.json # allowlist, admins, machines
 cp server.env.example server.env     # the deployment's address
-scripts/serve.sh                     # the request server (capnp)
-scripts/webview.sh 8080              # the public runs index (static, http)
+scripts/start_server.sh              # server + webview + bot, one screen
+                                     # session ("bench"; also: stop|status)
 ```
+
+(Or run the pieces by hand — `scripts/serve.sh`, `scripts/webview.sh 8080`,
+`bot/poll.sh <owner/repo>` — each in its own window: all three are foreground
+processes.)
 
 Set `BENCH_BASE_URL` in `server.env` to where the webview is served
 (e.g. `http://host:8080`): acknowledgement links then anchor into the index
