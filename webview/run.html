@@ -1,0 +1,296 @@
+<!doctype html>
+<!-- The per-run page (§10): one static file over the run's own bundle.
+
+     Served from <state>/webview/ next to index.html; the run id rides in the
+     fragment (run.html#run-20260828-004).  Everything it shows is fetched
+     from the bundle the agent uploaded (runs/<id>/, symlinked into the
+     webview root by scripts/webview.sh) plus the per-run dashboard build
+     under dashboards/<id>/ when the builder has produced one.  While the run
+     is active the page polls, like the index. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCaml bench — run</title>
+<style>
+  :root {
+    --paper:   #F4F2ED;
+    --surface: #FFFFFF;
+    --ink:     #1F2328;
+    --soft:    #57606A;
+    --faint:   #8A939E;
+    --rule:    #D9DDE2;
+    --rule2:   #E8EBEE;
+    --accent:  #B34700;
+    --queued:  #8A6D1C; --queued-bg: #F3EAD0;
+    --running: #1F5FA8; --running-bg: #DCE8F6;
+    --done:    #22663F; --done-bg:    #D9EBDF;
+    --bad:     #A03024; --bad-bg:     #F2DCD8;
+    --grey:    #5E6772; --grey-bg:    #E5E8EC;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:   #14181D;
+      --surface: #1B2129;
+      --ink:     #E3E8ED;
+      --soft:    #A6B0BA;
+      --faint:   #6E7A86;
+      --rule:    #303844;
+      --rule2:   #242C36;
+      --accent:  #E8863F;
+      --queued:  #D9B255; --queued-bg: #322A15;
+      --running: #7FB2E8; --running-bg: #16283C;
+      --done:    #79C695; --done-bg:    #17301F;
+      --bad:     #E28073; --bad-bg:     #38201C;
+      --grey:    #9AA5B0; --grey-bg:    #262E38;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink);
+         font: 15px/1.55 var(--sans); padding: 0 1.25rem 5rem; }
+  .wrap { max-width: 60rem; margin: 0 auto; }
+  header { padding: 2.6rem 0 1.1rem; border-bottom: 2px solid var(--ink); }
+  h1 { margin: 0 0 0.2rem; font-size: 1.4rem; letter-spacing: -0.01em;
+       font-family: var(--mono); }
+  h1 a { color: var(--faint); text-decoration: none; font-family: var(--sans);
+         font-weight: 400; font-size: 0.8em; }
+  .sub { color: var(--soft); margin: 0.3rem 0 0; font-size: 0.92rem; }
+  code, .mono { font-family: var(--mono); font-size: 0.86em;
+         background: var(--rule2); padding: 0.05em 0.3em; border-radius: 3px; }
+  .chip { display: inline-block; font: 600 0.72rem var(--mono);
+          padding: 0.12em 0.55em; border-radius: 99px; vertical-align: middle; }
+  .chip.queued    { color: var(--queued);  background: var(--queued-bg); }
+  .chip.running, .chip.publishing
+                  { color: var(--running); background: var(--running-bg); }
+  .chip.done      { color: var(--done);    background: var(--done-bg); }
+  .chip.failed, .chip.timed_out
+                  { color: var(--bad);     background: var(--bad-bg); }
+  .chip.cancelled { color: var(--grey);    background: var(--grey-bg); }
+  h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em;
+       color: var(--soft); margin: 1.8rem 0 0.5rem; }
+  .grid { display: grid; grid-template-columns: 11rem 1fr; gap: 0.25rem 1rem;
+          font-size: 0.92rem; }
+  .grid .k { color: var(--faint); }
+  table { border-collapse: collapse; width: 100%; background: var(--surface);
+          border: 1px solid var(--rule); font-size: 0.88rem; }
+  th, td { text-align: left; padding: 0.45rem 0.7rem;
+           border-bottom: 1px solid var(--rule2); }
+  th { font: 600 0.72rem var(--mono); text-transform: uppercase;
+       color: var(--soft); }
+  td.num { font-family: var(--mono); text-align: right; }
+  .links a { margin-right: 1.1rem; }
+  a { color: var(--accent); }
+  .note { color: var(--faint); font-size: 0.85rem; }
+  .error { color: var(--bad); padding: 2rem 0; font-family: var(--mono); }
+  #events { font: 0.8rem var(--mono); background: var(--surface);
+            border: 1px solid var(--rule); padding: 0.6rem 0.8rem;
+            overflow-x: auto; }
+  #events div { white-space: nowrap; }
+  #events .ts { color: var(--faint); }
+  footer { margin-top: 2rem; font: 0.72rem var(--mono); color: var(--faint); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span id="runid">…</span> <span class="chip" id="state"></span>
+        <a href="./#top">← all runs</a></h1>
+    <p class="sub"><code id="command"></code></p>
+  </header>
+
+  <div class="error" id="err" hidden></div>
+
+  <section id="body" hidden>
+    <h2>Request</h2>
+    <div class="grid" id="facts"></div>
+
+    <h2>Compilers</h2>
+    <table><thead><tr><th>role</th><th>runtime</th><th>pin</th>
+      <th>configure args</th></tr></thead><tbody id="pins"></tbody></table>
+
+    <h2>Results</h2>
+    <p class="links" id="results"></p>
+
+    <h2>Measurements <span class="note" id="mnote"></span></h2>
+    <table id="mtable" hidden><thead><tr>
+      <th>benchmark</th><th>runtime</th><th class="num">inv</th>
+      <th class="num">wall (s)</th><th class="num">gc ovh (%)</th>
+      <th class="num">max rss (MiB)</th></tr></thead>
+      <tbody id="mrows"></tbody></table>
+
+    <h2>Timeline</h2>
+    <div id="events"><span class="note">no events yet</span></div>
+  </section>
+
+  <footer>everything on this page is the run's own bundle:
+    <a href="#" id="bundlelink" style="color:inherit">browse it</a></footer>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+
+const runId = decodeURIComponent(location.hash.replace(/^#/, ""));
+if (!/^[A-Za-z0-9._-]+$/.test(runId)) {
+  $("err").textContent = "no run id: open this page as run.html#run-…";
+  $("err").hidden = false;
+  throw new Error("no run id");
+}
+const bundle = `runs/${runId}`;
+$("runid").textContent = runId;
+$("bundlelink").href = `${bundle}/`;
+
+async function getJson(url) {
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(`${url}: ${r.status}`);
+  return r.json();
+}
+async function getText(url) {
+  const r = await fetch(url, { cache: "no-store" });
+  return r.ok ? r.text() : null;
+}
+async function exists(url) {
+  try { return (await fetch(url, { method: "HEAD", cache: "no-store" })).ok; }
+  catch { return false; }
+}
+
+function rel(iso) {
+  if (!iso) return "";
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 90) return `${Math.round(s)}s ago`;
+  if (s < 5400) return `${Math.round(s / 60)}m ago`;
+  if (s < 129600) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+const dur = (s) => s == null ? "" :
+  s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m${s % 60}s`
+  : `${Math.floor(s / 3600)}h${Math.round((s % 3600) / 60).toString().padStart(2, "0")}m`;
+
+function factRows(m) {
+  const trigger = m.pr_url
+    ? `<a href="${esc(m.pr_url)}">${esc(m.pr_url.replace("https://github.com/", ""))}</a>`
+    : "cli";
+  const cells = (m.cells_passed || m.cells_failed)
+    ? `${m.cells_passed} passed${m.cells_failed ? `, ${m.cells_failed} failed` : ""}`
+    : "";
+  return [
+    ["requested by", esc(m.requested_by)],
+    ["trigger", trigger],
+    ["machine", `<code>${esc(m.machine)}</code>`],
+    ["queued", `${esc(m.queued_at)} <span class="note">(${rel(m.queued_at)})</span>`],
+    ["started", m.started_at ? esc(m.started_at) : "—"],
+    ["finished", m.finished_at ? esc(m.finished_at) : "—"],
+    ["duration", dur(m.duration_seconds)],
+    ["cells", cells],
+  ].filter(([, v]) => v !== "");
+}
+
+function pinRow(role, p) {
+  if (!p || !p.name) return "";
+  const sha = /^[0-9a-f]{40}$/.test(p.commit) ? p.commit.slice(0, 10) : p.commit;
+  return `<tr><td>${role}</td><td class="mono">${esc(p.name)}</td>
+    <td class="mono" title="${esc(p.commit)}">${esc(sha)}</td>
+    <td class="mono">${esc(p.configure_args || "")}</td></tr>`;
+}
+
+async function renderResults(m) {
+  const parts = [];
+  if (await exists(`dashboards/${runId}/index.html`))
+    parts.push(`<a href="dashboards/${runId}/">dashboard</a>`);
+  else if (m.state === "done")
+    parts.push(`<span class="note">dashboard: not built yet</span>`);
+  if (await exists(`${bundle}/report.md`))
+    parts.push(`<a href="${bundle}/report.md">report.md</a>`);
+  if (await exists(`${bundle}/console.log`))
+    parts.push(`<a href="${bundle}/console.log">console.log</a>`);
+  if (await exists(`${bundle}/contract/manifest.json`))
+    parts.push(`<a href="${bundle}/contract/manifest.json">contract</a>`);
+  parts.push(`<a href="${bundle}/runspec.json">run spec</a>`);
+  parts.push(`<a href="${bundle}/">bundle</a>`);
+  $("results").innerHTML = parts.join(" ");
+}
+
+async function renderMeasurements() {
+  const manifest = await getJson(`${bundle}/contract/manifest.json`).catch(() => null);
+  const nd = await getText(`${bundle}/contract/measurements/olly.ndjson`);
+  if (!manifest || !nd) { $("mnote").textContent = "none yet"; return; }
+  const runtimeOf = {};
+  for (const c of manifest.configs || [])
+    runtimeOf[c.config_id] = c._runtime_name || (c.runtime && c.runtime.version) || "?";
+  const rows = [];
+  for (const line of nd.split("\n")) {
+    if (!line.trim()) continue;
+    let r; try { r = JSON.parse(line); } catch { continue; }
+    const metric = (n) => {
+      const m = (r.metrics || []).find((x) => x.name === n);
+      return m ? m.value : null;
+    };
+    const rss = metric("max_rss");
+    rows.push(`<tr><td class="mono">${esc(r.benchmark?.name)}</td>
+      <td class="mono">${esc(runtimeOf[r.config?.config_id] ?? "?")}</td>
+      <td class="num">${esc(r.invocation)}</td>
+      <td class="num">${metric("wall_time") ?? ""}</td>
+      <td class="num">${metric("gc_overhead") ?? ""}</td>
+      <td class="num">${rss == null ? "" : (rss / 1024).toFixed(1)}</td></tr>`);
+  }
+  if (rows.length) {
+    $("mrows").innerHTML = rows.join("");
+    $("mtable").hidden = false;
+    $("mnote").textContent = `(${rows.length} invocation record${rows.length === 1 ? "" : "s"}, source: olly)`;
+  } else $("mnote").textContent = "none yet";
+}
+
+function renderEvents(nd) {
+  if (!nd || !nd.trim()) return;
+  const out = [];
+  for (const line of nd.split("\n")) {
+    if (!line.trim()) continue;
+    let e; try { e = JSON.parse(line); } catch { continue; }
+    const b = e.body || {};
+    const what = b.type === "phase"
+      ? `${b.phase}${b.detail ? ` — ${b.detail}` : ""}`
+      : b.type === "execution_finished"
+        ? `finished: ${b.result} (${b.cells_passed} passed, ${b.cells_failed} failed)`
+        : JSON.stringify(b);
+    out.push(`<div><span class="ts">${esc(e.ts)}</span> e${esc(e.execution)} ${esc(what)}</div>`);
+  }
+  if (out.length) $("events").innerHTML = out.join("");
+}
+
+let timer = null;
+async function refresh() {
+  let meta;
+  try { meta = await getJson(`${bundle}/meta.json`); }
+  catch (e) {
+    $("err").textContent = `no such run here: ${runId}`;
+    $("err").hidden = false;
+    return;
+  }
+  $("body").hidden = false;
+  $("state").textContent = meta.state;
+  $("state").className = `chip ${meta.state}`;
+  $("command").textContent = meta.command;
+  document.title = `${runId} — ${meta.state}`;
+  $("facts").innerHTML = factRows(meta)
+    .map(([k, v]) => `<div class="k">${k}</div><div>${v}</div>`).join("");
+  $("pins").innerHTML =
+    pinRow("baseline", meta.baseline)
+    + (meta.candidates || []).map((c) => pinRow("candidate", c)).join("");
+  await renderResults(meta);
+  await renderMeasurements();
+  renderEvents(await getText(`${bundle}/events.ndjson`));
+  const active = meta.state === "queued" || meta.state === "running"
+    || meta.state === "publishing"
+    || (meta.state === "done" && !(await exists(`dashboards/${runId}/index.html`)));
+  if (active && !timer) timer = setInterval(refresh, 10000);
+  if (!active && timer) { clearInterval(timer); timer = null; }
+}
+refresh();
+window.addEventListener("hashchange", () => location.reload());
+</script>
+</body>
+</html>

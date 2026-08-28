@@ -4,10 +4,10 @@ The service's front half is three pieces in three places:
 
 | piece | where it lives | needs |
 |---|---|---|
-| `bench-serve` (the server) | any host -- a laptop today, a VPS later | git, opam, python3+PyYAML, capnp; clones of running-ng and ocaml-bench-dashboard |
+| `bench-serve` (the server) | any host -- a laptop today, a VPS later | git, opam, python3+PyYAML, capnp; clones of running-ng and ocaml-bench-dashboard; node >= 18 for the per-run dashboard builds (skipped with a warning without it) |
 | the PR bot ([bot/](../bot/)) | the ocaml/ocaml **fork**'s Actions | `BENCH_BOT_CAP` secret + a prebuilt `bench-cli` URL |
 | `bench-cli` | anywhere | a `.cap` file |
-| `bench-agent` | the bench machine | its `agent-<machine>.cap` |
+| `bench-agent` | the bench machine | its `agent-<machine>.cap`; `scripts/agent-setup.sh` provisions the rest |
 
 The server validates, resolves, queues, and **acknowledges**; the run
 directories it writes under `<state>/runs/` are the queue the agent drains.
@@ -93,16 +93,28 @@ never admin), so it is safe to live on a host that executes PR code.
 
 ```sh
 # on the bench machine, in this repo
-make switch deps build           # or copy a prebuilt bench-agent
+scripts/agent-setup.sh           # prereq checks, private clones, build
 scp server:~/.ocaml-bench-service/caps/agent-<machine>.cap .
-BENCH_AGENT_CAP=agent-<machine>.cap ./_build/default/bin/bench_agent.exe
+until BENCH_AGENT_CAP=agent-<machine>.cap \
+  ./_build/default/bin/bench_agent.exe; do sleep 5; done
 ```
 
+On a truly bare machine, run running-ng's `install_deps_linux.sh` first: it
+installs the heavy prerequisites (opam itself, C libraries, perf) that
+`agent-setup.sh` only checks for.
+
+The agent keeps its own clones under `~/.bench-agent` and never touches
+personal checkouts; `agent-setup.sh` seeds them from local donor checkouts
+when present (fast, and it copies macro-benches' gitignored vendored trees)
+or from the canonical URLs otherwise. macro-benches' own `make setup`
+(vendoring, patches, a test build) is the agent's job, not the script's: it
+runs supervised on the first claim and again whenever a bump moves the
+benches pin, dropping the vendored trees first when the lock file changed.
+
 The agent polls (`--interval`, default 5 s), and exits on a broken
-connection; run it under a supervisor loop (screen/systemd) that restarts
-it. `--once` processes a single assignment and exits, which is the smoke
-test: submit a run, watch the agent claim and finish it, see the webview row
-go `queued -> running -> done`.
+connection, hence the supervisor loop. `--once` processes a single
+assignment and exits, which is the smoke test: submit a run, watch the agent
+claim and finish it, see the webview row go `queued -> running -> done`.
 
 ## Wiring the fork
 

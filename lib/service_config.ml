@@ -11,23 +11,17 @@
    * The **admins** are the allowlist's privileged subset (§5.4): they may use
      `force=true` and `priority=top`, cancel anyone's run, and operate machines.
      An admin need not appear in `allowlist` too.
-   * The **machine registry** is how machines are added and removed.  An entry is
-     really a *slot*: (host, OPAMROOT, benches dir).  One slot means one
-     concurrent run, because running-ng locks the opam root -- which is also the
-     property that keeps two measurements from overlapping on one machine.
-     No ssh coordinates: the server never connects to a bench machine (Q1, the
-     agent dials out), so the registry holds names and paths, not transports. *)
+   * The **machine registry** is how machines are added and removed.  An entry
+     is really a *slot*: one concurrent run, because running-ng locks the opam
+     root -- which is also the property that keeps two measurements from
+     overlapping on one machine.  No ssh coordinates and NO PATHS: the server
+     never connects to a bench machine (Q1, the agent dials out), and where
+     things live on the machine is the AGENT's configuration (§6.1) -- the
+     registry holds names and policy, nothing else. *)
 
 type bot = { account : string; token_env : string }
 
-type machine = {
-  name : string;
-  opamroot : string option;
-  macro_bench_dir : string;
-  log_dir : string;
-  dedicated : bool;
-  is_default : bool;
-}
+type machine = { name : string; dedicated : bool; is_default : bool }
 
 type t = {
   bot : bot;
@@ -68,14 +62,9 @@ let ( let* ) = Result.bind
 
 let machine_of_json j =
   let* name = str (member "name" j) in
-  let* macro_bench_dir = str (member "macro_bench_dir" j) in
-  let* log_dir = str (member "log_dir" j) in
   Ok
     {
       name;
-      opamroot = string_opt (member "opamroot" j);
-      macro_bench_dir;
-      log_dir;
       dedicated = bool_or false (member "dedicated" j);
       is_default = bool_or false (member "default" j);
     }

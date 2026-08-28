@@ -32,6 +32,7 @@ type opts = {
   running_ng_src : string;
   running_ng_dir : string;
   running_ng_ref : string;
+  macro_benches_dir : string;
   macro_benches_ref : string;
   olly_dir : string;
   olly_ref : string;
@@ -60,6 +61,7 @@ let default_opts () =
     running_ng_src = Filename.concat home "running-ng/src";
     running_ng_dir = Filename.concat home "running-ng";
     running_ng_ref = "origin/adding-ocaml-support";
+    macro_benches_dir = Filename.concat home "macro-benches";
     macro_benches_ref = "origin/master";
     olly_dir = Filename.concat home "runtime_events_tools";
     olly_ref = "origin/main";
@@ -95,7 +97,7 @@ Options:
                           offline accepts only versions and commit shas)
   --base-url URL          links in acknowledgements
   --base-config --vocab --running-ng-src --running-ng-dir --running-ng-ref
-  --macro-benches-ref --helper --max-active-per-user
+  --macro-benches-dir --macro-benches-ref --helper --max-active-per-user
 |};
   exit 0
 
@@ -123,6 +125,7 @@ let parse_args argv =
       | "--running-ng-src" -> set (fun v -> { !o with running_ng_src = v })
       | "--running-ng-dir" -> set (fun v -> { !o with running_ng_dir = v })
       | "--running-ng-ref" -> set (fun v -> { !o with running_ng_ref = v })
+      | "--macro-benches-dir" -> set (fun v -> { !o with macro_benches_dir = v })
       | "--macro-benches-ref" -> set (fun v -> { !o with macro_benches_ref = v })
       | "--olly-dir" -> set (fun v -> { !o with olly_dir = v })
       | "--olly-ref" -> set (fun v -> { !o with olly_ref = v })
@@ -160,17 +163,14 @@ let deps o ~on_bump =
     | Ok c -> c
     | Error e -> die "bad service config %s: %s" o.service_config e
   in
-  let macro_bench_dir =
-    match Service_config.default_machine service with
-    | Some m -> m.Service_config.macro_bench_dir
-    | None -> die "no machines registered"
-  in
-  (* The pins: seeded from these checkouts on first start, then changed only
-     by `bump` (+ restart).  Missing checkouts are skipped with a warning. *)
+  (* The pins: seeded from these SERVER-SIDE checkouts on first start, then
+     changed only by `bump` (+ restart).  Missing checkouts are skipped with
+     a warning.  These are the server's metadata clones, nothing to do with
+     where the agent checks sources out (§6.1: the agent owns its paths). *)
   let pin_config =
     [
       (Api.Running_ng, o.running_ng_dir, o.running_ng_ref);
-      (Api.Macro_benches, macro_bench_dir, o.macro_benches_ref);
+      (Api.Macro_benches, o.macro_benches_dir, o.macro_benches_ref);
       (Api.Olly, o.olly_dir, o.olly_ref);
       (Api.Dashboard, o.dashboard_dir, o.dashboard_ref);
     ]

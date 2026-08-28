@@ -136,7 +136,7 @@ let to_json ~(ctx : Gen.context) ~(request : Request.t) ~(spec : Gen.t)
       ( "config",
         `Assoc
           [
-            ("filename", str (Filename.basename ctx.Gen.config_path));
+            ("filename", str (ctx.Gen.request_id ^ ".yml"));
             (* MD5 only to detect drift between the spec and a config on disk;
                nothing here is a security boundary.  Same digest the contract
                uses for config_id. *)

@@ -6,9 +6,10 @@
 # One session named "bench", three windows -- each script is a foreground
 # process that never returns, so they cannot share a shell:
 #
-#   serve    scripts/serve.sh        the request server (capnp)
-#   webview  scripts/webview.sh      the runs index (static http)
-#   bot      bot/poll.sh             the PR comment poller (needs `gh auth`)
+#   serve      scripts/serve.sh              the request server (capnp)
+#   webview    scripts/webview.sh            the runs index (static http)
+#   bot        bot/poll.sh                   the PR comment poller (gh auth)
+#   dashboards scripts/dashboard_builder.sh  per-run dashboard builds (node)
 #
 # Attach with `screen -r bench` (Ctrl-a d detaches, Ctrl-a " lists windows).
 # Logs also land in the state dir (serve.log / webview.log / bot.log), which
@@ -79,6 +80,12 @@ elif gh auth status >/dev/null 2>&1; then
   window bot "bot/poll.sh $(printf %q "$BENCH_BOT_REPO") $BENCH_BOT_INTERVAL 2>&1 | tee -a $(printf %q "$BENCH_STATE_DIR")/bot.log"
 else
   echo "warning: gh is not authenticated -- bot not started (run 'gh auth login', then: $0 stop && $0)"
+fi
+
+if command -v node >/dev/null 2>&1; then
+  window dashboards "scripts/dashboard_builder.sh 2>&1 | tee -a $(printf %q "$BENCH_STATE_DIR")/dashboards.log"
+else
+  echo "warning: node not installed -- per-run dashboards not built (webview pages still work)"
 fi
 
 sleep 2

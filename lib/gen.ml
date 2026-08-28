@@ -30,10 +30,6 @@ type context = {
          itself (<host>-<timestamp>), and that is what lands in the manifest.
          This id ties the config back to the queue row and to request.json. *)
   base_include : string;
-  config_path : string;
-  macro_bench_dir : string;
-  log_dir : string;
-  opamroot : string option;
   machine : string;
   requested_by : string option;
   pr_url : string option;
@@ -438,11 +434,10 @@ let generate ~ctx ~(request : Request.t) ~(facts : Facts.t) ~sweepable ~variants
          (flow_list (List.map Variant.runtime_name candidates)))
   end;
 
+  (* Machine-independent env only: paths are the agent's (§6.1); bench-gen
+     appends its own dev-local ones when printing a by-hand recipe. *)
   let env =
     [
-      ("RUNNING_MACRO_BENCH_DIR", ctx.macro_bench_dir);
-      ("CONFIG_FILE", ctx.config_path);
-      ("LOG_DIR", ctx.log_dir);
       (* Reuse is the service's policy: the switch is the compiler cache and a
          rebuild costs 10-20 min per runtime.  Correctness comes from the
          runner's switch-provenance check, not from rebuilding blindly. *)
@@ -450,7 +445,6 @@ let generate ~ctx ~(request : Request.t) ~(facts : Facts.t) ~sweepable ~variants
       (* Comma-separated: apply_tag_filter unions the named tags. *)
       ("RUNNING_TAG", String.concat "," tags);
     ]
-    @ match ctx.opamroot with Some r -> [ ("OPAMROOT", r) ] | None -> []
   in
   Ok
     {

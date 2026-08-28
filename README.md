@@ -104,14 +104,21 @@ executor -- the agent's stage 1 executor is a stub that exercises the
 protocol without running a benchmark. Provisioning, running-ng under a
 timeout, and collection per the spec's globs are the next piece.
 
-The **webview** is the public runs index (pkgeval-reports style): one static,
-self-contained page (`webview/index.html`) polling `runs.json`, a snapshot of
-every §8 meta record that `bench-serve` rewrites on each state change.
-`scripts/webview.sh [port]` serves it with python's http.server -- no sudo, no
-nginx. Browsers cannot speak capnp, so files-over-HTTP is deliberately the
-webview's read path; when the store (API C) lands, it takes over both the
-files and their durability, and per-run dashboard links go live (until then
-the index shows an honest "pending agent" instead of dead links).
+The **webview** is the public face (pkgeval-reports style), all static pages
+over the store's files, served by `scripts/webview.sh [port]` with python's
+http.server -- no sudo, no nginx. Browsers cannot speak capnp, so
+files-over-HTTP is deliberately the webview's read path:
+
+- `index.html` polls `runs.json`, a snapshot of every §8 meta record that
+  `bench-serve` rewrites on each state change;
+- `run.html#<run-id>` is the per-run page over the run's own bundle: live
+  phase timeline while it runs, then the measurements, report, console log
+  and contract once it is done (the bundle directory is symlinked into the
+  webview root);
+- `scripts/dashboard_builder.sh` watches for finished runs and builds each
+  one a full **ocaml-bench-dashboard** site (`BENCH_RUN_DIR=<bundle> npm run
+  build`, static with relative paths), published under
+  `dashboards/<run-id>/` and linked from the run page.
 
 Standing a server up (a laptop now, a VPS later -- the service moves with its
 state directory, not with code changes) is `scripts/server-setup.sh` +
@@ -257,7 +264,8 @@ paths, not a transport.
 | `bin/bench_serve.ml` | the server daemon; writes the capability files |
 | `bin/bench_agent.ml` | the bench machine daemon (API B); stage 1: stub executor |
 | `bot/` | the GitHub Action for `/bench` PR comments, and its setup notes |
-| `webview/`, `scripts/webview.sh` | the public runs index: a static page over `runs.json` |
+| `webview/`, `scripts/webview.sh` | the public pages: runs index + per-run page over the bundle |
+| `scripts/dashboard_builder.sh` | builds a static ocaml-bench-dashboard per finished run |
 | `scripts/serve.sh`, `docs/DEPLOY.md` | one deployment = one env file; the move-hosts recipe |
 | `lib/request.ml` | the comment grammar |
 | `lib/gen.ml` | request + suite definitions → a running-ng config |

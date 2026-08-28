@@ -56,10 +56,25 @@ document is required reading.
   transport-proven machine name, with `execution.json` per run as the lease
   record. Transports wrap this module; do not fork a second submit path.
 - `bin/bench_agent.ml` -- the bench machine daemon (API B). Dials the server
-  with `agent-<machine>.cap`, claims, heartbeats (obeying a `Cancel` reply at
-  phase boundaries), posts events, uploads, finishes. STAGE 1: the executor is
-  a stub -- replace `execute` to make it real. Exits on a broken connection;
-  a supervisor loop restarts it.
+  with `agent-<machine>.cap`, claims, heartbeats every 30s while a child runs
+  (the reply is the cancel channel; SIGTERM group -> grace -> SIGKILL), posts
+  events, uploads the §8 bundle, finishes. The REAL executor is the default
+  (`--stub` keeps the protocol-only one): private clones under ~/.bench-agent
+  checked out to the spec's shas, the config materialized after an md5 check
+  with `${RUNNING_NG_ROOT}` substituted, then the pinned tree's own
+  run_ocaml_bench_gc_sweep.sh under setsid. Exit 0 is NOT success: an empty
+  contract (no configs in manifest.json) finishes as failed -- running-ng
+  skips failed benchmark builds and exits cleanly. Exits on a broken
+  connection; a supervisor loop restarts it. `scripts/agent-setup.sh` is the
+  bench-machine bootstrap (prereq checks, donor-seeded clones, build).
+- **macro-benches cannot build from a bare clone**: its vendored trees
+  (duniverse/, vendor/, _rocq_prefix/) are gitignored PRODUCTS of its own
+  `make setup`. The agent runs that setup supervised on first claim and
+  whenever the benches pin moves (marker: `<state>/benches-setup.json` with
+  commit + lock-file md5), dropping the vendored trees first when the LOCK
+  changed -- setup-monorepo.sh deliberately skips re-pulling a populated
+  duniverse/. agent-setup.sh seeds the trees from a donor checkout to skip
+  the first big pull.
 - `lib/resolver.ml` -- user input → pinned runtimes. `Resolver.github` is the
   server's whole GitHub dependency and it is only `git`: ls-remote for tags,
   branches and `refs/pull/N/head`, plus a bare cache repo for the merge base.
@@ -111,6 +126,14 @@ document is required reading.
   `selection.tags`); execution-scoped directives (rerun's cache bypass, the
   timeout) travel in the §6.2 assignment at claim time.
 - `lib/bridge.ml` -- the only caller of python.
+- `webview/` -- the public pages: `index.html` (runs table over runs.json) and
+  `run.html#<id>` (per-run page over the bundle, symlinked into the webview
+  root by scripts/webview.sh). `scripts/dashboard_builder.sh` builds a static
+  ocaml-bench-dashboard per finished run (BENCH_RUN_DIR=<bundle> npm run
+  build) into webview/dashboards/<id>/; a failed build leaves <id>.failed and
+  is not retried until it is removed. It builds from the WORKING dashboard
+  checkout and records the dashboard pin in .built.json -- rebuild-on-bump is
+  future work.
 - `scripts/rng_helper.py` -- `facts` | `validate` | `tagfilter`.
 - `test/` -- table tests against `test/fixtures/` snapshots.
 - `scripts/live_check.sh` -- the same generation against a pinned running-ng ref

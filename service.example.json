@@ -18,9 +18,10 @@
     "allow_associations  escape hatch, e.g. [\"OWNER\"]. Empty by default:",
     "              explicit logins beat inferred permissions.",
     "machines      the slot registry. One entry = one concurrent run, because",
-    "              the opam root lock is what serialises runs. No ssh entries:",
-    "              the server never connects to a bench machine (the agent",
-    "              dials out), so a machine is names and paths, not a transport.",
+    "              the opam root lock is what serialises runs. No ssh entries",
+    "              and no paths: the server never connects to a bench machine",
+    "              (the agent dials out), and where things live on the machine",
+    "              is the agent's own configuration. Names and policy only.",
     "compiler_repo the clone URL that vs= versions/branches resolve against",
     "              (release tags, branch heads); PR heads resolve against the",
     "              PR's own repository."
@@ -45,9 +46,6 @@
     {
       "name": "monolith",
       "default": true,
-      "opamroot": null,
-      "macro_bench_dir": "/home/udesou/macro-benches",
-      "log_dir": "/home/udesou/bench-runs",
       "dedicated": false
     }
   ]

@@ -66,8 +66,7 @@ let service_config =
           "results_repo":"u/r",
           "allowlist":["udesou"],
           "admins":[],
-          "machines":[{"name":"monolith","default":true,
-                       "macro_bench_dir":"/mb","log_dir":"/logs"}] }|}
+          "machines":[{"name":"monolith","default":true}] }|}
   with
   | Ok c -> c
   | Error e -> failwith ("service config fixture: " ^ e)

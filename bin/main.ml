@@ -195,25 +195,18 @@ let load_sweepable o =
   | Ok d -> d
   | Error e -> die "could not read %s: %s" o.vocab e
 
-(* Machine, dirs and budgets come from the service config when there is one, and
-   from flags otherwise, so the CLI stays usable before a config exists. *)
-type placement = {
-  p_machine : string;
-  p_macro_bench_dir : string;
-  p_log_dir : string;
-  p_opamroot : string option;
-  p_cap : float;
-  p_cell : float;
-}
+(* Machine name and budgets come from the service config when there is one,
+   and from flags otherwise, so the CLI stays usable before a config exists.
+   Paths never come from the registry: it holds names and policy only (where
+   things live on a machine is the agent's configuration, §6.1); the
+   --macro-bench-dir/--log-dir/--opamroot flags are dev-local conveniences. *)
+type placement = { p_machine : string; p_cap : float; p_cell : float }
 
 let resolve_placement o svc =
   match svc with
   | None ->
     {
       p_machine = Option.value o.machine ~default:"local";
-      p_macro_bench_dir = o.macro_bench_dir;
-      p_log_dir = o.log_dir;
-      p_opamroot = o.opamroot;
       p_cap = Option.value o.cap_seconds ~default:Cost.default_cap_seconds;
       p_cell = Option.value o.cell_seconds ~default:Cost.default_cell_seconds;
     }
@@ -223,10 +216,6 @@ let resolve_placement o svc =
     | Ok m ->
       {
         p_machine = m.name;
-        p_macro_bench_dir = m.macro_bench_dir;
-        p_log_dir = m.log_dir;
-        p_opamroot =
-          (match o.opamroot with Some r -> Some r | None -> m.opamroot);
         p_cap = Option.value o.cap_seconds ~default:c.cap_seconds;
         p_cell = Option.value o.cell_seconds ~default:c.cell_seconds;
       })
@@ -366,10 +355,6 @@ let cmd_spec o =
         {
           Gen.request_id = o.request_id;
           base_include = o.base_config;
-          config_path;
-          macro_bench_dir = pl.p_macro_bench_dir;
-          log_dir = pl.p_log_dir;
-          opamroot = pl.p_opamroot;
           machine = pl.p_machine;
           requested_by =
             (match o.requested_by with Some u -> Some u | None -> o.login);
@@ -396,7 +381,7 @@ let cmd_spec o =
         let sources =
           [
             src "running-ng" o.running_ng_dir o.running_ng_ref;
-            src "macro-benches" pl.p_macro_bench_dir o.macro_benches_ref;
+            src "macro-benches" o.macro_bench_dir o.macro_benches_ref;
           ]
         in
         let runspec_path =
@@ -415,9 +400,17 @@ let cmd_spec o =
           print_string spec.config_yaml;
           print_newline ();
           print_endline "# --- environment ---";
+          (* spec.env is machine-independent; the paths are dev-local ones
+             from this tool's own flags, appended for a runnable recipe *)
           List.iter
             (fun (k, v) -> Printf.printf "export %s=%s\n" k (Filename.quote v))
-            spec.env;
+            (spec.env
+            @ [
+                ("RUNNING_MACRO_BENCH_DIR", o.macro_bench_dir);
+                ("CONFIG_FILE", config_path);
+                ("LOG_DIR", o.log_dir);
+              ]
+            @ match o.opamroot with Some r -> [ ("OPAMROOT", r) ] | None -> []);
           Printf.printf "\n# estimate: %s\n" (Cost.explain spec.cost);
           Printf.printf "# timeout:  %s\n"
             (Cost.human (float_of_int (Runspec.timeout_seconds ~cost:spec.cost)));

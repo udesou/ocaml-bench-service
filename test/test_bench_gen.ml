@@ -92,10 +92,6 @@ let ctx ?(program_count = 20) ?(cap_seconds = Cost.default_cap_seconds) () =
   {
     Gen.request_id = "req-test";
     base_include = "/base/macro_base.yml";
-    config_path = "/runs/req-test.yml";
-    macro_bench_dir = "/macro-benches";
-    log_dir = "/runs";
-    opamroot = None;
     machine = "monolith";
     requested_by = Some "udesou";
     pr_url = Some "https://github.com/udesou/ocaml/pull/1";
@@ -555,8 +551,7 @@ let service_config =
           "allowlist":["Udesou","watcher"],
           "admins":["Admin-Person"],
           "allow_associations":[],
-          "machines":[{"name":"monolith","default":true,
-                       "macro_bench_dir":"/mb","log_dir":"/logs"}] }|}
+          "machines":[{"name":"monolith","default":true}] }|}
   with
   | Ok c -> c
   | Error e -> failwith ("service config fixture: " ^ e)
@@ -584,7 +579,7 @@ let test_authz () =
     (Result.is_error
        (Service_config.of_string
           {|{ "bot":{"account":"a"}, "results_repo":"u/r", "allowlist":[],
-              "machines":[{"name":"m","macro_bench_dir":"/mb","log_dir":"/l"}] }|}));
+              "machines":[{"name":"m"}] }|}));
   check_true ~name:"no machines rejected"
     (Result.is_error
        (Service_config.of_string

@@ -159,9 +159,9 @@
 <div class="wrap">
   <header>
     <h1>OCaml bench <span class="dim">— runs</span></h1>
-    <p class="sub">Every <code>/bench</code> request, newest first. Reports and
-      dashboards appear per run once measurements exist; until the bench agent
-      lands, runs correctly stay <code>queued</code>.</p>
+    <p class="sub">Every <code>/bench</code> request, newest first. Each run
+      links to its own page: live progress while it runs, and the bundle,
+      measurements and dashboard once it is done.</p>
   </header>
 
   <div class="bar">
@@ -236,12 +236,10 @@ function compilers(r) {
 }
 
 function results(r) {
-  // Real links only exist once a run has published a bundle (§10); a link
-  // that 404s is worse than an honest dash.
-  if (r.state === "done" && r.links) {
-    return `<a class="pr" href="${esc(r.links.webview)}">dashboard</a>`;
-  }
-  return `<span class="pend">— pending agent</span>`;
+  // Every run has a page over its own bundle; terminal or not, that is
+  // where the details live.
+  const page = `run.html#${encodeURIComponent(r.run_id)}`;
+  return `<a class="pr" href="${page}">${r.state === "done" ? "results" : "details"}</a>`;
 }
 
 function render() {
@@ -249,7 +247,7 @@ function render() {
   const shown = runs.filter(matches);
   tbody.innerHTML = shown.map((r) => `
     <tr id="${esc(r.run_id)}">
-      <td class="runid"><a href="#${esc(r.run_id)}">${esc(r.run_id)}</a></td>
+      <td class="runid"><a href="run.html#${encodeURIComponent(r.run_id)}">${esc(r.run_id)}</a></td>
       <td><span class="chip ${esc(r.state)}">${esc(r.state)}</span></td>
       <td>${trigger(r)}</td>
       <td class="who">${esc(r.requested_by)}</td>

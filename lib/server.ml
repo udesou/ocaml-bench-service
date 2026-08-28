@@ -313,12 +313,10 @@ let set_drained deps names =
 (* --- shared pieces --------------------------------------------------------- *)
 
 let links deps run_id =
-  {
-    Api.status = Printf.sprintf "%s/runs/%s/status" deps.base_url run_id;
-    (* The index highlights the anchored run; per-run pages replace this
-       once bundles exist (§10). *)
-    webview = Printf.sprintf "%s/#%s" deps.base_url run_id;
-  }
+  (* both land on the per-run page (§10): live status while the run is
+     active, results and the dashboard link once it is done *)
+  let page = Printf.sprintf "%s/run.html#%s" deps.base_url run_id in
+  { Api.status = page; webview = page }
 
 (* The caller proves the login; the CONFIG decides the role and whether the
    login may trigger at all. *)
@@ -555,12 +553,6 @@ let submit deps (auth0 : Api.auth) (s : Api.submit) =
              but the config it ships is machine-independent: the agent
              substitutes its own checkout for the placeholder (§6.1) *)
           base_include = Runspec.base_include_placeholder;
-          (* machine-side path: the agent writes the config next to the logs *)
-          config_path =
-            Filename.concat machine.Service_config.log_dir (run_id ^ ".yml");
-          macro_bench_dir = machine.Service_config.macro_bench_dir;
-          log_dir = machine.Service_config.log_dir;
-          opamroot = machine.Service_config.opamroot;
           machine = machine.Service_config.name;
           requested_by = Some auth.Api.login;
           pr_url;

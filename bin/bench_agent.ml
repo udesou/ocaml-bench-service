@@ -364,9 +364,9 @@ let kill_group ~clock pid =
   in
   grace 30
 
-(* Supervise the child: poll for exit, heartbeat every 30s (the reply is the
-   cancel channel), enforce the assignment's timeout. *)
-let supervise ~clock (p : proto) ~timeout_seconds pid =
+(* Supervise a child: poll for exit, heartbeat every 30s in [ph] (the reply
+   is the cancel channel), enforce [timeout_seconds]. *)
+let supervise ~clock (p : proto) ~ph ~timeout_seconds pid =
   let deadline = Unix.gettimeofday () +. float_of_int timeout_seconds in
   let last_hb = ref 0. in
   let rec loop () =
@@ -382,7 +382,7 @@ let supervise ~clock (p : proto) ~timeout_seconds pid =
       end
       else if now -. !last_hb >= 30. then begin
         last_hb := now;
-        match p.heartbeat Api.Measuring with
+        match p.heartbeat ph with
         | `Continue -> loop ()
         | `Cancel ->
           log "%s: cancel order; killing the process group" p.id.Api.run_id;
@@ -396,6 +396,92 @@ let supervise ~clock (p : proto) ~timeout_seconds pid =
     | _, status -> `Exited status
   in
   loop ()
+
+(* Run one command line under setsid, console to a file, supervised. *)
+let run_supervised ~clock (p : proto) ~ph ~timeout_seconds ~console_path
+    ~overrides argv =
+  let console =
+    Unix.openfile console_path [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ]
+      0o644
+  in
+  let devnull = Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 in
+  let r =
+    match
+      Unix.create_process_env "setsid"
+        (Array.of_list ("setsid" :: argv))
+        (child_env overrides) devnull console console
+    with
+    | exception e -> `Spawn_failed (Printexc.to_string e)
+    | pid -> supervise ~clock p ~ph ~timeout_seconds pid
+  in
+  Unix.close console;
+  Unix.close devnull;
+  r
+
+(* macro-benches is a monorepo whose vendored dependency trees (duniverse/,
+   vendor/, _rocq_prefix/) are gitignored PRODUCTS of its own `make setup`,
+   so a checkout alone cannot build anything.  Run that setup whenever the
+   pinned commit moves, and drop the vendored trees first when the LOCK FILE
+   moved -- setup-monorepo.sh deliberately skips re-pulling a populated
+   duniverse/.  Tracked in <state>/benches-setup.json; supervised like the
+   benchmark itself (a bump-triggered re-vendor takes long enough to need
+   heartbeats and deserves a working cancel). *)
+let ensure_benches_setup ~clock (p : proto) ~state ~dir ~commit ~workdir =
+  let setup_script = Filename.concat dir "scripts/setup-monorepo.sh" in
+  if not (Sys.file_exists setup_script) then `Ok (* nothing to vendor *)
+  else begin
+    let lock_md5 =
+      match Util.read_file (Filename.concat dir "macro-benches.opam.locked") with
+      | s -> Digest.to_hex (Digest.string s)
+      | exception _ -> ""
+    in
+    let marker = Filename.concat state "benches-setup.json" in
+    let recorded =
+      match Yojson.Safe.from_string (Util.read_file marker) with
+      | j -> (jstr (member "commit" j), jstr (member "lock_md5" j))
+      | exception _ -> (None, None)
+    in
+    if recorded = (Some commit, Some lock_md5) then `Ok
+    else begin
+      (match recorded with
+      | _, Some l when l <> lock_md5 ->
+        log "benches lock file moved: dropping vendored trees for a re-pull";
+        List.iter
+          (fun d ->
+            ignore
+              (Sys.command
+                 (Printf.sprintf "rm -rf %s"
+                    (Filename.quote (Filename.concat dir d)))))
+          [ "duniverse"; "vendor"; "_rocq_prefix" ]
+      | _ -> ());
+      p.post
+        [
+          phase_body Api.Preparing
+            (Some "macro-benches setup (vendoring; can take a while)");
+        ];
+      let console_path = Filename.concat workdir "setup.log" in
+      match
+        run_supervised ~clock p ~ph:Api.Preparing ~timeout_seconds:3600
+          ~console_path ~overrides:[]
+          [ "bash"; "-c";
+            Printf.sprintf "cd %s && exec make setup" (Filename.quote dir) ]
+      with
+      | `Exited (Unix.WEXITED 0) ->
+        Util.write_file marker
+          (Yojson.Safe.pretty_to_string
+             (`Assoc
+               [ ("commit", `String commit); ("lock_md5", `String lock_md5) ])
+          ^ "\n");
+        `Ok
+      | `Exited _ ->
+        `Failed
+          (Printf.sprintf "macro-benches `make setup` failed; tail: %s"
+             (tail_of_file console_path 500))
+      | `Spawn_failed m -> `Failed ("could not spawn make setup: " ^ m)
+      | `Timed_out -> `Failed "macro-benches `make setup` timed out (1h)"
+      | `Cancelled -> `Cancelled
+    end
+  end
 
 let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
   let p = proto cap a.Api.id in
@@ -471,6 +557,21 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
       match checkout_all () with
       | Error m -> fail_run p "prepare: %s" m
       | Ok () -> (
+        mkdir_p workdir;
+        (* the monorepo's vendored trees: first run, and every benches bump *)
+        let setup =
+          match
+            List.find_opt (fun (n, _, _) -> n = "macro-benches") sources
+          with
+          | Some (_, _, commit) ->
+            ensure_benches_setup ~clock p ~state
+              ~dir:(dir_of "macro-benches") ~commit ~workdir
+          | None -> `Ok
+        in
+        match setup with
+        | `Failed m -> fail_run p "prepare: %s" m
+        | `Cancelled -> abort p ~detail:"cancelled during macro-benches setup"
+        | `Ok -> (
         let running_ng = dir_of "running-ng" in
         let benches_dir =
           if Sys.file_exists (dir_of "macro-benches") then
@@ -496,7 +597,6 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
           else if md5 <> "" && Digest.to_hex (Digest.string contents) <> md5
           then fail_run p "prepare: config md5 mismatch (spec drifted?)"
           else begin
-            mkdir_p workdir;
             mkdir_p log_root;
             let config_path = Filename.concat workdir filename in
             Util.write_file config_path
@@ -521,12 +621,6 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
                  [ ("RUNNING_TAG", String.concat "," tags) ])
             in
             let console_path = Filename.concat workdir "console.log" in
-            let console =
-              Unix.openfile console_path
-                [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ]
-                0o644
-            in
-            let devnull = Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 in
             let before =
               if Sys.file_exists log_root then
                 Array.to_list (Sys.readdir log_root)
@@ -542,20 +636,11 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
                         a.Api.timeout_seconds))
               with
               | `Cancel -> `Cancelled
-              | `Continue -> (
-                match
-                  Unix.create_process_env "setsid"
-                    [| "setsid"; script |]
-                    (child_env overrides) devnull console console
-                with
-                | exception e ->
-                  `Spawn_failed (Printexc.to_string e)
-                | pid ->
-                  supervise ~clock p
-                    ~timeout_seconds:a.Api.timeout_seconds pid)
+              | `Continue ->
+                run_supervised ~clock p ~ph:Api.Measuring
+                  ~timeout_seconds:a.Api.timeout_seconds ~console_path
+                  ~overrides [ script ]
             in
-            Unix.close console;
-            Unix.close devnull;
             (* --- collect: on failure as well as success ------------------- *)
             let after =
               if Sys.file_exists log_root then
@@ -671,7 +756,7 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
                 }
             | `Cancelled -> abort p ~detail:"cancelled via heartbeat"
           end
-        end)))
+        end))))
 
 (* --- the stub executor (--stub): the protocol with no benchmark -------------- *)
 
