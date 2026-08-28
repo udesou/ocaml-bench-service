@@ -89,9 +89,13 @@ as `{parameter: [values]}`.
 ### `config`
 `filename`, `md5`, `contents` -- the generated running-ng config travels
 **inline**, so a spec can be archived, diffed, or replayed with no shared
-filesystem. The agent writes `contents` wherever its own layout dictates and
-must never trust a file already on disk; the digest only detects drift, it is
-not a security boundary.
+filesystem. The contents are machine-independent: the `includes:` line names
+the base config under the `${RUNNING_NG_ROOT}` placeholder, and the agent
+substitutes its own running-ng checkout path when it materializes the file
+(`Runspec.base_include_placeholder`). The agent writes the result wherever
+its own layout dictates and must never trust a file already on disk; `md5`
+is of the contents as transported (placeholder included) and only detects
+drift, it is not a security boundary.
 
 ### `artifacts`
 `fetch`: the globs the agent brings back -- contract artifacts, logs, per-tool

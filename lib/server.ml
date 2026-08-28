@@ -551,7 +551,10 @@ let submit deps (auth0 : Api.auth) (s : Api.submit) =
       let ctx =
         {
           Gen.request_id = run_id;
-          base_include = deps.base_include;
+          (* the SERVER validates against its real tree (deps.base_include),
+             but the config it ships is machine-independent: the agent
+             substitutes its own checkout for the placeholder (§6.1) *)
+          base_include = Runspec.base_include_placeholder;
           (* machine-side path: the agent writes the config next to the logs *)
           config_path =
             Filename.concat machine.Service_config.log_dir (run_id ^ ".yml");

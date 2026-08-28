@@ -1414,6 +1414,13 @@ let test_execution () =
       check_eq_opt ~name:"the assignment carries the spec verbatim"
         ~expected:(Some run_id)
         ~actual:(jstr (member "run_id" asg.Api.spec));
+      (* machine-independent config: the include line names the base config
+         under the placeholder the agent substitutes (§6.1) *)
+      check_contains ~name:"the shipped config carries the include placeholder"
+        ~needle:Runspec.running_ng_root_var
+        (Option.value
+           (jstr (member "contents" (member "config" asg.Api.spec)))
+           ~default:"");
       asg.Api.id
   in
   (match Server.status deps user ~run_id with

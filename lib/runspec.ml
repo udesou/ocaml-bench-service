@@ -44,6 +44,15 @@ let source ~name ~repo ~commit () = { name; repo; commit }
    estimate by this much is wedged; the floor covers cold compiler builds,
    which the estimate deliberately excludes because they are cached and highly
    variable. *)
+(* The config travels machine-independent (§6.1): its `includes:` line names
+   the base config under this placeholder, and the AGENT substitutes its own
+   running-ng checkout path when it materializes the file.  The md5 in the
+   spec is of the contents as transported, placeholder included. *)
+let running_ng_root_var = "${RUNNING_NG_ROOT}"
+
+let base_include_placeholder =
+  running_ng_root_var ^ "/src/running/config/base/ocaml/macro_base.yml"
+
 let timeout_of_estimate ~seconds =
   let floor_s = 90 * 60 in
   max floor_s (int_of_float (float_of_int seconds *. 2.5))
