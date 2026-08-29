@@ -332,17 +332,29 @@ let ensure_checkout ~dir ~repo ~commit =
 
 let launch_script = "run_ocaml_bench_gc_sweep.sh"
 
-(* environment for the child: current env with [overrides] winning *)
+(* The child gets a MINIMAL environment, never ours: running-ng dumps the
+   full environment into every per-cell log, and those logs are published
+   store artifacts -- a session token from the agent's inherited env ended
+   up on a public results repo (GitGuardian incident, 2026-08-29).  An
+   allowlist of what a build legitimately needs, plus our overrides. *)
+let env_allowlist =
+  [
+    "HOME"; "USER"; "LOGNAME"; "SHELL"; "LANG"; "LC_ALL"; "TERM"; "TMPDIR";
+    "PATH"; "OPAMROOT"; "OPAMSWITCH";
+  ]
+
 let child_env overrides =
-  let keys = List.map fst overrides in
-  let keep e =
-    match String.index_opt e '=' with
-    | Some i -> not (List.mem (String.sub e 0 i) keys)
-    | None -> true
+  let inherited =
+    List.filter_map
+      (fun e ->
+        match String.index_opt e '=' with
+        | Some i when List.mem (String.sub e 0 i) env_allowlist
+                      && not (List.mem_assoc (String.sub e 0 i) overrides) ->
+          Some e
+        | _ -> None)
+      (Array.to_list (Unix.environment ()))
   in
-  Array.of_list
-    (List.filter keep (Array.to_list (Unix.environment ()))
-    @ List.map (fun (k, v) -> k ^ "=" ^ v) overrides)
+  Array.of_list (inherited @ List.map (fun (k, v) -> k ^ "=" ^ v) overrides)
 
 (* SIGTERM the child's process group (setsid made pid its group), grace,
    SIGKILL, and reap. *)
