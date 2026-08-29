@@ -395,6 +395,38 @@ let render_ack deps ~run_id ~(request : Request.t) ~(spec : Gen.t) ~machine
   List.iter (fun w -> add "\n> %s" w) spec.Gen.warnings;
   Buffer.contents b
 
+(* The completion notice, rendered HERE (the server renders, requesters post
+   verbatim -- the same rule as every other message) and parked in the bundle
+   as completion.md.  The bot posts it once to the run's PR and leaves a
+   completion.posted marker; CLI runs just keep the file as a record. *)
+let write_completion deps (m : Api.meta) ~detail =
+  let l = links deps m.Api.run_id in
+  let b = Buffer.create 256 in
+  let add fmt = Printf.ksprintf (Buffer.add_string b) fmt in
+  add "**Benchmark run `%s` %s**" m.Api.run_id
+    (match m.Api.state with
+    | Api.Done -> "finished"
+    | Api.Failed -> "FAILED"
+    | Api.Timed_out -> "timed out"
+    | Api.Cancelled -> "was cancelled"
+    | other -> Api.string_of_run_state other (* not terminal: never rendered *));
+  (match m.Api.duration_seconds with
+  | Some s -> add " after %s" (Cost.human (float_of_int s))
+  | None -> ());
+  add " on `%s`.\n\n" m.Api.machine;
+  if m.Api.state = Api.Done then
+    add "- cells: %d passed%s\n" m.Api.cells_passed
+      (if m.Api.cells_failed > 0 then
+         Printf.sprintf ", %d failed" m.Api.cells_failed
+       else "");
+  (match detail with
+  | Some d when m.Api.state <> Api.Done -> add "\n> %s\n" (Util.trim d)
+  | _ -> ());
+  add "\n[Results](%s) -- measurements, dashboard, logs.\n" l.Api.webview;
+  Util.write_file
+    (Filename.concat (run_dir deps m.Api.run_id) "completion.md")
+    (Buffer.contents b)
+
 (* --- the API A functions ---------------------------------------------------- *)
 
 (* Post-auth cancellation, shared by the cancel operation and `/bench cancel`
@@ -830,6 +862,12 @@ let requeue deps (auth0 : Api.auth) ~run_id =
           cells_failed = 0;
           summary = None;
         };
+      (* a fresh cycle gets a fresh completion notice (and post) *)
+      List.iter
+        (fun f ->
+          try Sys.remove (Filename.concat (run_dir deps run_id) f)
+          with Sys_error _ -> ())
+        [ "completion.md"; "completion.posted" ];
       stamp deps run_id "requeued";
       Ok ())
 
@@ -1042,13 +1080,20 @@ let claim deps ~machine =
           (fun (m : Api.meta) ->
             match read_exec deps m.Api.run_id with
             | Some e when e.cancel_requested ->
-              save_meta deps
+              let m =
                 {
                   m with
                   Api.state = Api.Cancelled;
                   finished_at = Some (iso_now ());
-                };
+                }
+              in
+              save_meta deps m;
               stamp deps m.Api.run_id "cancelled";
+              write_completion deps m
+                ~detail:
+                  (Some
+                     "the agent stopped responding while the cancellation \
+                      was pending");
               false
             | _ -> true)
           running
@@ -1115,7 +1160,7 @@ let post_events deps ~machine (id : Api.execution_id) events =
 let server_owned =
   [
     "meta.json"; "request.json"; "runspec.json"; "config.yml";
-    "execution.json"; "events.ndjson";
+    "execution.json"; "events.ndjson"; "completion.md"; "completion.posted";
   ]
 
 let safe_rel_path p =
@@ -1157,7 +1202,7 @@ let finish deps ~machine (id : Api.execution_id) (r : Api.execution_result) =
       | `Aborted -> Api.Cancelled
     in
     let now_epoch = Unix.gettimeofday () in
-    save_meta deps
+    let m =
       {
         m with
         Api.state;
@@ -1165,8 +1210,11 @@ let finish deps ~machine (id : Api.execution_id) (r : Api.execution_result) =
         duration_seconds = Some (int_of_float (now_epoch -. e.claimed_at_epoch));
         cells_passed = r.Api.cells_passed;
         cells_failed = r.Api.cells_failed;
-      };
+      }
+    in
+    save_meta deps m;
     stamp deps id.Api.run_id (Api.string_of_run_state state);
+    write_completion deps m ~detail:r.Api.detail;
     Ok ()
   end
 

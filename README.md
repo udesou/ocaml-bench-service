@@ -286,9 +286,10 @@ paths, not a transport.
    queue.~~ **Done.**
 4. ~~Wire it: Cap'n Proto transport with capability-file auth, `bench-cli`,
    GitHub resolution (PR head, merge base, tags, branches), and the
-   `/bench`-comment Action for the fork.~~ **Done** -- still to come here:
-   result reuse by run key (`lib/run_key.ml`), and the run-completion comment
-   (needs step 5).
+   `/bench`-comment Action for the fork.~~ **Done** -- the run-completion
+   comment is in (the server renders `completion.md` at terminal states, the
+   polling bot posts it once per PR run); still to come here: result reuse
+   by run key (`lib/run_key.ml`).
 5. **Run it.** An agent on the bench machine that *dials out* to claim work
    from the queue (the server never connects to a machine). The execution
    protocol is **done**: claim/heartbeat/events/upload/finish over capnp

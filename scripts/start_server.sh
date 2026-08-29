@@ -88,6 +88,12 @@ else
   echo "warning: node not installed -- per-run dashboards not built (webview pages still work)"
 fi
 
+if [ -n "${BENCH_PAGES_REPO:-}" ]; then
+  window pages "BENCH_PAGES_REPO=$(printf %q "$BENCH_PAGES_REPO") scripts/publish_pages.sh 2>&1 | tee -a $(printf %q "$BENCH_STATE_DIR")/pages.log"
+else
+  echo "note: BENCH_PAGES_REPO empty -- not publishing to GitHub Pages"
+fi
+
 sleep 2
 echo "session '$SESSION' up -- attach: screen -r $SESSION"
 screen -S "$SESSION" -Q windows 2>/dev/null || true

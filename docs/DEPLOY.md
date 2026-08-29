@@ -116,6 +116,26 @@ connection, hence the supervisor loop. `--once` processes a single
 assignment and exits, which is the smoke test: submit a run, watch the agent
 claim and finish it, see the webview row go `queued -> running -> done`.
 
+## Publishing to GitHub Pages (the shareable face)
+
+`scripts/publish_pages.sh` syncs the whole webview root -- index, per-run
+pages, run bundles, dashboards -- into a GitHub repo and pushes; with Pages
+enabled on that repo's main branch, everything is served publicly, and the
+repo doubles as the git-backed store (Q2's lean). Setup, once:
+
+```sh
+gh repo create <user>/ocaml-bench-results --public   # Pages on private needs Pro
+# seed main (a README is enough), then:
+gh api -X POST repos/<user>/ocaml-bench-results/pages \
+  -f "source[branch]=main" -f "source[path]=/"
+```
+
+Then in `server.env`: `BENCH_PAGES_REPO=<user>/ocaml-bench-results`, and set
+`BENCH_BASE_URL` to the Pages URL so acknowledgement and completion links
+point somewhere PR readers can actually reach. `start_server.sh` runs the
+publisher as its fifth window. Pages sits behind a CDN cache (minutes), so
+the LAN webview stays the live view; this is the durable one.
+
 ## Wiring the fork
 
 Once the server is reachable (see [bot/README.md](../bot/README.md) for

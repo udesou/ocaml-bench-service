@@ -90,7 +90,17 @@ document is required reading.
   configured login + `bot.cap` at startup: the capability file IS the access
   (and the identity -- there is no --login anywhere).
 - `bot/` -- the fork's GitHub Action: bot.cap + a prebuilt bench-cli, posts
-  back whatever markdown the server returns.
+  back whatever markdown the server returns. `bot/poll.sh` (the LAN twin)
+  additionally posts COMPLETION notices: the server renders
+  `<run>/completion.md` at every terminal state (finish, dead-agent
+  close-out) and the bot posts it once per run to its PR
+  (`completion.posted` is the marker; requeue clears both for a fresh
+  cycle). The bot still renders nothing itself.
+- `scripts/publish_pages.sh` -- syncs the webview root (index, run pages,
+  bundles, dashboards) into a GitHub Pages repo and pushes: the shareable
+  face and the git-backed store PoC (Q2). Gated on BENCH_PAGES_REPO; fifth
+  start_server window. Pages needs `.nojekyll` (Jekyll drops _observablehq/)
+  and lags a CDN cache by minutes -- the LAN webview stays the live view.
 - `lib/request.ml` -- the comment grammar. Pure: no network, no knowledge of
   which tags exist, no cost decision, no roles (admin-only keys parse for
   everyone and are refused in Authz). Rejection messages are the product (they

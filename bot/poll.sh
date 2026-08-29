@@ -92,5 +92,30 @@ while :; do
     fi
     echo "$id" >> "$SEEN"
   done
+
+  # Completion notices: the server renders <run>/completion.md when a run
+  # reaches a terminal state (the same renders-verbatim rule as replies);
+  # post each one once to its PR.  completion.posted is the idempotency
+  # marker; CLI-triggered runs have no PR and are marked without posting.
+  for f in "$STATE"/runs/*/completion.md; do
+    [ -e "$f" ] || continue
+    d=$(dirname "$f")
+    [ -e "$d/completion.posted" ] && continue
+    pr_url=$(jq -r '.pr_url // empty' "$d/request.json" 2>/dev/null)
+    if [ -z "$pr_url" ]; then
+      touch "$d/completion.posted"   # a CLI run: the file itself is the record
+      continue
+    fi
+    path="${pr_url#https://github.com/}"
+    pr_repo="${path%%/pull/*}"
+    number="${path##*/}"
+    if gh api "repos/$pr_repo/issues/$number/comments" -f body="$(cat "$f")" >/dev/null; then
+      echo "bot: completion posted for $(basename "$d") on $pr_repo#$number"
+      touch "$d/completion.posted"
+    else
+      echo "bot: FAILED to post completion for $(basename "$d"); will retry"
+    fi
+  done
+
   sleep "$INTERVAL"
 done

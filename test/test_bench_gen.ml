@@ -1523,9 +1523,26 @@ let test_execution () =
   | Error e ->
     check_true ~name:"requeue is admin-only" (e.Api.code = Api.Forbidden)
   | Ok () -> fail "a user requeued a run");
+  let completion () =
+    match
+      Util.read_file
+        (Filename.concat
+           (Filename.concat (Filename.concat state_dir "runs") run_id)
+           "completion.md")
+    with
+    | s -> Some s
+    | exception _ -> None
+  in
+  (* every terminal state leaves a server-rendered completion notice *)
+  (match completion () with
+  | Some md ->
+    check_contains ~name:"an aborted finish renders a completion notice"
+      ~needle:"was cancelled" md
+  | None -> fail "no completion.md after the aborted finish");
   (match Server.requeue deps admin ~run_id with
   | Ok () -> ()
   | Error e -> fail "requeue: %s" (markdown e));
+  check_true ~name:"requeue clears the completion notice" (completion () = None);
   let id2 =
     match Server.claim deps ~machine:"monolith" with
     | Ok (Some asg) ->
@@ -1559,7 +1576,16 @@ let test_execution () =
           && m.Api.duration_seconds <> None
           && m.Api.started_at <> None)
       | None -> fail "finished run missing from list")
-    | Error e -> fail "list: %s" (markdown e))
+    | Error e -> fail "list: %s" (markdown e));
+    (match completion () with
+    | Some md ->
+      check_contains ~name:"a done finish renders the completion notice"
+        ~needle:"finished" md;
+      check_contains ~name:"the completion notice links the run page"
+        ~needle:("run.html#" ^ run_id) md;
+      check_contains ~name:"the completion notice counts cells"
+        ~needle:"20 passed, 1 failed" md
+    | None -> fail "no completion.md after the done finish")
   | Error e -> fail "finish 2: %s" (markdown e));
 
   (* rerun's cache bypass travels as the assignment directive *)
