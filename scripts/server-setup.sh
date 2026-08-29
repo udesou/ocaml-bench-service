@@ -26,6 +26,10 @@ need git "apt/brew install git"
 need opam "https://opam.ocaml.org/doc/Install.html"
 need python3 "apt/brew install python3"
 need capnp "apt install capnproto / brew install capnp, or build into ~/.local"
+# node drives the per-run dashboard builds (scripts/dashboard_builder.sh),
+# which the webview links; a server without it is missing a deliverable.
+need node "apt install nodejs npm / brew install node (>= 18)"
+need npm "apt install npm / comes with node"
 python3 -c 'import yaml' 2>/dev/null \
   || { echo "MISSING: PyYAML  (pip3 install pyyaml)"; missing=1; }
 [ "$missing" -eq 0 ] || exit 1
@@ -66,6 +70,27 @@ cd "$ROOT"
 # An existing switch may predate a dependency change (bitten on macOS when
 # the capnp packages arrived): deps is idempotent, so always refresh.
 make deps build test
+
+# --- the dashboard build chain (per-run dashboards, §10) ---------------------
+# scripts/dashboard_builder.sh runs `npm run build` in the dashboard checkout
+# for every finished run; that needs node_modules and the OCaml ingestor.
+# Both are one-time products of the checkout -- produce them here so a fresh
+# server host works without following another repo's README.  The ingestor
+# builds in OUR local switch (its deps land in ./_opam), so no extra switch
+# appears in the opam root.
+dash="${DASHBOARD_REPO:-$HOME/ocaml-bench-dashboard}"
+if [ ! -d "$dash/node_modules" ]; then
+  echo "installing dashboard node modules..."
+  (cd "$dash" && npm install --no-fund --no-audit)
+fi
+if [ ! -x "$dash/bin/ingest" ]; then
+  echo "building the dashboard ingestor..."
+  opam install --switch="$ROOT" --yes --deps-only "$dash"
+  (cd "$dash" && opam exec --switch="$ROOT" -- dune build ingest/ingest.exe)
+  mkdir -p "$dash/bin"
+  cp -f "$dash/_build/default/ingest/ingest.exe" "$dash/bin/ingest"
+  echo "built     $dash/bin/ingest"
+fi
 
 echo
 echo "Setup complete. Next:"
