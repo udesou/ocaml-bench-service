@@ -25,7 +25,7 @@ set -euo pipefail
 STATE="${BENCH_STATE_DIR:-$HOME/.ocaml-bench-service}"
 REPO="${BENCH_PAGES_REPO:-}"
 DIR="${BENCH_PAGES_DIR:-$STATE/pages-repo}"
-ARG="${1:-60}"
+ARG="${1:-30}"
 
 [ -n "$REPO" ] || { echo "pages: BENCH_PAGES_REPO empty -- publishing disabled"; exit 0; }
 command -v rsync >/dev/null || { echo "pages: rsync not installed"; exit 1; }
