@@ -291,7 +291,9 @@ $("filters").addEventListener("click", (e) => {
 
 async function refresh() {
   try {
-    const res = await fetch("runs.json", { cache: "no-store" });
+    // The query string busts CDN caches (GitHub Pages serves ~10 min stale
+    // otherwise); "no-store" alone only bypasses the browser's own cache.
+    const res = await fetch(`runs.json?t=${Date.now()}`, { cache: "no-store" });
     if (!res.ok) throw new Error(res.status + " " + res.statusText);
     const data = await res.json();
     runs = (data.runs || []);

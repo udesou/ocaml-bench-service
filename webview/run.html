@@ -144,17 +144,21 @@ const bundle = `runs/${runId}`;
 $("runid").textContent = runId;
 $("bundlelink").href = `${bundle}/`;
 
+// The query string busts CDN caches (GitHub Pages serves ~10 min stale
+// otherwise); "no-store" alone only bypasses the browser's own cache.
+const bust = (url) => `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`;
+
 async function getJson(url) {
-  const r = await fetch(url, { cache: "no-store" });
+  const r = await fetch(bust(url), { cache: "no-store" });
   if (!r.ok) throw new Error(`${url}: ${r.status}`);
   return r.json();
 }
 async function getText(url) {
-  const r = await fetch(url, { cache: "no-store" });
+  const r = await fetch(bust(url), { cache: "no-store" });
   return r.ok ? r.text() : null;
 }
 async function exists(url) {
-  try { return (await fetch(url, { method: "HEAD", cache: "no-store" })).ok; }
+  try { return (await fetch(bust(url), { method: "HEAD", cache: "no-store" })).ok; }
   catch { return false; }
 }
 
