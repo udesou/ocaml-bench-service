@@ -260,7 +260,7 @@ let proto cap (id : Api.execution_id) =
         post [ finished_body result ];
         match Rpc.Agent_client.finish cap ~id result with
         | Ok () ->
-          (* the server's Ok IS the store confirmation (§6.5) *)
+          (* the server's Ok IS the store confirmation (§6.4) *)
           log "%s execution %d finished: %s" id.Api.run_id id.Api.execution
             (Api.string_of_execution_outcome result.Api.outcome)
         | Error e -> log "finish failed: %s" e.Api.error_markdown);
