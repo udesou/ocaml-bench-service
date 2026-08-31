@@ -330,7 +330,7 @@ let () =
     | Error e -> fail "post_events: %s" e.Api.error_markdown);
     (match
        Rpc.Agent_client.upload agent ~id
-         { Api.path = "report.md"; content = "# hi\n" }
+         { Api.path = "raw/notes.md"; content = "# hi\n" }
      with
     | Ok () -> ()
     | Error e -> fail "upload: %s" e.Api.error_markdown);

@@ -42,6 +42,19 @@
   "cap_seconds": 7200,
   "cell_seconds": 30,
 
+  "report": {
+    "_comment": [
+      "Verdict bands and gates for report.md (lib/report.ml). Provisional",
+      "until repeat-run noise data (Q12). wall/instructions/max RSS are",
+      "reported individually; wall needs wall_min_invocations for a verdict,",
+      "RSS needs the band AND rss_floor_kib moved."
+    ],
+    "warn_pct": 1,
+    "significant_pct": 3,
+    "wall_min_invocations": 3,
+    "rss_floor_kib": 1024
+  },
+
   "machines": [
     {
       "name": "monolith",

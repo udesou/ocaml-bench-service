@@ -34,6 +34,8 @@ type t = {
   machines : machine list;
   cap_seconds : float;
   cell_seconds : float;
+  report : Report.thresholds;
+      (* verdict bands + gates for report.md (§5.5); provisional until Q12 *)
 }
 
 let member k = function
@@ -116,6 +118,20 @@ let of_json j =
           cap_seconds = float_or Cost.default_cap_seconds (member "cap_seconds" j);
           cell_seconds =
             float_or Cost.default_cell_seconds (member "cell_seconds" j);
+          report =
+            (let r = member "report" j in
+             let d = Report.default_thresholds in
+             {
+               Report.warn_pct = float_or d.Report.warn_pct (member "warn_pct" r);
+               significant_pct =
+                 float_or d.Report.significant_pct (member "significant_pct" r);
+               wall_min_invocations =
+                 (match member "wall_min_invocations" r with
+                 | `Int i -> i
+                 | _ -> d.Report.wall_min_invocations);
+               rss_floor_kib =
+                 float_or d.Report.rss_floor_kib (member "rss_floor_kib" r);
+             });
         }
 
 let of_string s =

@@ -122,6 +122,14 @@ document is required reading.
   (roles), machine registry (no ssh: the agent dials out, the server never
   connects to a machine). `Authz.vet_request` is where `force=`/`priority=`
   are refused for non-admins.
+- `lib/report.ml` -- contract artifacts -> report.md, rendered by the SERVER
+  at finish and embedded verbatim in completion.md (no separate summary
+  vocabulary: the tables ARE the summary). Policy: wall / instructions /
+  max RSS reported INDIVIDUALLY, never composed into one verdict (no metric
+  is authoritative -- fp changes regress instructions while wall shrugs);
+  per-benchmark medians, the dashboard's 1%/3% bands, wall verdicts gated on
+  >= wall_min_invocations, RSS verdicts on >= rss_floor_kib moved.
+  Thresholds come from service.json `report` (provisional until Q12).
 - `lib/help.ml` -- `/bench help`, generated from facts + vocab.
 - `lib/run_key.ml` -- the content identity of a measurement, for result reuse.
   Computed by the server at submission; bench-gen emits `run_key: null` because

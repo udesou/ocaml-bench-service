@@ -269,6 +269,7 @@ paths, not a transport.
 | `scripts/serve.sh`, `docs/DEPLOY.md` | one deployment = one env file; the move-hosts recipe |
 | `lib/request.ml` | the comment grammar |
 | `lib/gen.ml` | request + suite definitions → a running-ng config |
+| `lib/report.ml` | contract -> report.md: per-metric verdicts with noise gates |
 | `lib/runspec.ml` | the run spec, specified in `docs/RUNSPEC.md` |
 | `lib/run_key.ml` | the content identity of a measurement (result reuse) |
 | `lib/cost.ml` | the estimate and the budget limit |

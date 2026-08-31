@@ -399,7 +399,37 @@ let render_ack deps ~run_id ~(request : Request.t) ~(spec : Gen.t) ~machine
    verbatim -- the same rule as every other message) and parked in the bundle
    as completion.md.  The bot posts it once to the run's PR and leaves a
    completion.posted marker; CLI runs just keep the file as a record. *)
-let write_completion deps (m : Api.meta) ~detail =
+(* report.md: rendered from the bundle's contract at finish (policy and
+   verdict gates in lib/report.ml).  Defensive at every step: a rendering
+   problem must never lose a finish. *)
+let render_report deps (m : Api.meta) =
+  match m.Api.baseline with
+  | None -> None
+  | Some b -> (
+    let file f =
+      match Util.read_file (Filename.concat (run_dir deps m.Api.run_id) f) with
+      | s -> Some s
+      | exception _ -> None
+    in
+    match
+      Option.bind (file "contract/manifest.json") (fun s ->
+          match Yojson.Safe.from_string s with
+          | j -> Some j
+          | exception _ -> None)
+    with
+    | None -> None
+    | Some manifest -> (
+      try
+        Report.render ~thresholds:deps.service.Service_config.report ~manifest
+          ~olly:(file "contract/measurements/olly.ndjson")
+          ~perf:(file "contract/measurements/perf.ndjson")
+          ~baseline:b.Api.name
+          ~candidates:
+            (List.map (fun (c : Api.runtime_pin) -> c.Api.name) m.Api.candidates)
+          ()
+      with _ -> None))
+
+let write_completion deps (m : Api.meta) ~detail ~report =
   let l = links deps m.Api.run_id in
   let b = Buffer.create 256 in
   let add fmt = Printf.ksprintf (Buffer.add_string b) fmt in
@@ -422,6 +452,14 @@ let write_completion deps (m : Api.meta) ~detail =
   (match detail with
   | Some d when m.Api.state <> Api.Done -> add "\n> %s\n" (Util.trim d)
   | _ -> ());
+  (* the report rides along VERBATIM (agreed 2026-08-31): no separate summary
+     vocabulary, the tables are the summary *)
+  (match report with
+  | Some body when String.length body <= 6000 -> add "\n%s" body
+  | Some _ ->
+    add "\nThe result table is too large for a comment; it is in the report \
+         behind the results link.\n"
+  | None -> ());
   add "\n[Results](%s) -- measurements, dashboard, logs.\n" l.Api.webview;
   Util.write_file
     (Filename.concat (run_dir deps m.Api.run_id) "completion.md")
@@ -1089,7 +1127,7 @@ let claim deps ~machine =
               in
               save_meta deps m;
               stamp deps m.Api.run_id "cancelled";
-              write_completion deps m
+              write_completion deps m ~report:None
                 ~detail:
                   (Some
                      "the agent stopped responding while the cancellation \
@@ -1161,6 +1199,7 @@ let server_owned =
   [
     "meta.json"; "request.json"; "runspec.json"; "config.yml";
     "execution.json"; "events.ndjson"; "completion.md"; "completion.posted";
+    "report.md" (* rendered by the server at finish, not uploaded *);
   ]
 
 let safe_rel_path p =
@@ -1214,7 +1253,16 @@ let finish deps ~machine (id : Api.execution_id) (r : Api.execution_result) =
     in
     save_meta deps m;
     stamp deps id.Api.run_id (Api.string_of_run_state state);
-    write_completion deps m ~detail:r.Api.detail;
+    (* the report: from whatever contract exists -- failed and timed-out runs
+       included, the contract degrades gracefully (§4) *)
+    let report = render_report deps m in
+    (match report with
+    | Some body ->
+      Util.write_file
+        (Filename.concat (run_dir deps id.Api.run_id) "report.md")
+        (Printf.sprintf "# %s\n\n%s" id.Api.run_id body)
+    | None -> ());
+    write_completion deps m ~detail:r.Api.detail ~report;
     Ok ()
   end
 

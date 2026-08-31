@@ -790,7 +790,9 @@ let execute_stub cap ~clock ~stub_seconds (a : Api.assignment) =
       match phase p Api.Collecting None with
       | `Cancel -> abort p ~detail:"cancelled via heartbeat"
       | `Continue ->
-        p.upload ~path:"report.md"
+        (* report.md is the SERVER's to render; the stub leaves its marker
+           under raw/ like any other agent artifact *)
+        p.upload ~path:"raw/stub.md"
           ~content:
             (Printf.sprintf
                "# %s\n\nStub execution %d: the agent claimed this run and \

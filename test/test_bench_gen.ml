@@ -1560,6 +1560,22 @@ let test_execution () =
     check_true ~name:"a superseded execution cannot finish the run"
       (e.Api.code = Api.Forbidden)
   | Ok () -> fail "execution 1 finished a run leased to execution 2");
+  (* a contract in the bundle makes finish render the report and embed it in
+     the completion (verbatim; agreed 2026-08-31) *)
+  List.iter
+    (fun (path, content) ->
+      match Server.upload deps ~machine:"monolith" id2 { Api.path; content } with
+      | Ok () -> ()
+      | Error e -> fail "contract upload: %s" (markdown e))
+    [
+      ( "contract/manifest.json",
+        {|{"configs":[{"config_id":"a","_runtime_name":"ocaml-5.5.0"},
+                      {"config_id":"b","_runtime_name":"ocaml-c0f8c8c"}]}|} );
+      ( "contract/measurements/olly.ndjson",
+        {|{"benchmark":{"name":"irmin_mem_rw"},"config":{"config_id":"a"},"invocation":0,"metrics":[{"name":"wall_time","value":10.0}]}
+{"benchmark":{"name":"irmin_mem_rw"},"config":{"config_id":"b"},"invocation":0,"metrics":[{"name":"wall_time","value":10.6}]}|}
+      );
+    ];
   (match
      Server.finish deps ~machine:"monolith" id2
        { Api.outcome = `Done; cells_passed = 20; cells_failed = 1;
@@ -1584,8 +1600,17 @@ let test_execution () =
       check_contains ~name:"the completion notice links the run page"
         ~needle:("run.html#" ^ run_id) md;
       check_contains ~name:"the completion notice counts cells"
-        ~needle:"20 passed, 1 failed" md
-    | None -> fail "no completion.md after the done finish")
+        ~needle:"20 passed, 1 failed" md;
+      check_contains ~name:"the report rides in the completion verbatim"
+        ~needle:"`ocaml-c0f8c8c` vs `ocaml-5.5.0`" md;
+      check_contains ~name:"one invocation: the embedded wall delta is gated"
+        ~needle:"(n=1)*" md
+    | None -> fail "no completion.md after the done finish");
+    check_true ~name:"finish writes report.md into the bundle"
+      (Sys.file_exists
+         (Filename.concat
+            (Filename.concat (Filename.concat state_dir "runs") run_id)
+            "report.md"))
   | Error e -> fail "finish 2: %s" (markdown e));
 
   (* rerun's cache bypass travels as the assignment directive *)
@@ -1677,6 +1702,108 @@ let test_execution () =
       (s.provenance.Api.build_id = "b-1" && s.size_bytes = 1_000_000L)
   | _ -> fail "reported caches did not round-trip"
 
+(* --- 8. the report renderer (lib/report.ml) -------------------------------- *)
+
+let test_report () =
+  let manifest =
+    Yojson.Safe.from_string
+      {|{"configs":[{"config_id":"a","_runtime_name":"ocaml-base"},
+                    {"config_id":"b","_runtime_name":"ocaml-pr"}]}|}
+  in
+  let line bench cfg inv metrics =
+    Printf.sprintf
+      {|{"benchmark":{"name":"%s"},"config":{"config_id":"%s"},"invocation":%d,"metrics":[%s]}|}
+      bench cfg inv
+      (String.concat ","
+         (List.map
+            (fun (n, v) -> Printf.sprintf {|{"name":"%s","value":%f}|} n v)
+            metrics))
+  in
+  let nd lines = String.concat "\n" lines ^ "\n" in
+  (* three invocations (wall verdicts allowed): `hot` regresses on
+     instructions and wall; `cold` is flat; `heap` moves RSS above band and
+     floor; `tiny` moves RSS 5% but under the 1 MiB floor *)
+  let olly =
+    nd
+      (List.concat_map
+         (fun inv ->
+           [
+             line "hot" "a" inv [ ("wall_time", 10.0); ("max_rss", 100000.) ];
+             line "hot" "b" inv [ ("wall_time", 10.5); ("max_rss", 100100.) ];
+             line "cold" "a" inv [ ("wall_time", 5.0); ("max_rss", 50000.) ];
+             line "cold" "b" inv [ ("wall_time", 5.01); ("max_rss", 50010.) ];
+             line "heap" "a" inv [ ("wall_time", 2.0); ("max_rss", 100000.) ];
+             line "heap" "b" inv [ ("wall_time", 2.0); ("max_rss", 104000.) ];
+             line "tiny" "a" inv [ ("wall_time", 1.0); ("max_rss", 500.) ];
+             line "tiny" "b" inv [ ("wall_time", 1.0); ("max_rss", 525.) ];
+           ])
+         [ 0; 1; 2 ])
+  in
+  let perf =
+    nd
+      (List.concat_map
+         (fun inv ->
+           [
+             line "hot" "a" inv [ ("instructions", 1000.) ];
+             line "hot" "b" inv [ ("instructions", 1050.) ];
+             line "cold" "a" inv [ ("instructions", 1000.) ];
+             line "cold" "b" inv [ ("instructions", 1002.) ];
+           ])
+         [ 0; 1; 2 ])
+  in
+  (match
+     Report.render ~manifest ~olly:(Some olly) ~perf:(Some perf)
+       ~baseline:"ocaml-base" ~candidates:[ "ocaml-pr" ] ()
+   with
+  | None -> fail "report: no output for a populated contract"
+  | Some md ->
+    check_contains ~name:"report names the comparison"
+      ~needle:"`ocaml-pr` vs `ocaml-base`" md;
+    check_contains ~name:"a significant instructions move gets the mark"
+      ~needle:"+5.0% \xe2\xac\x86" md;
+    check_true ~name:"a flat benchmark gets no mark"
+      (contains ~needle:"+0.2%" md
+      && not (contains ~needle:"+0.2% \xe2\x9a\xa0" md));
+    check_contains ~name:"an RSS move above band and floor gets the mark"
+      ~needle:"+4.0% \xe2\xac\x86" md;
+    check_true ~name:"an RSS move under the 1 MiB floor is gated"
+      (contains ~needle:"+5.0% |" md);
+    check_true ~name:"three invocations: wall verdicts are not gated"
+      (not (contains ~needle:"(n=" md));
+    check_contains ~name:"per-metric counts ride along" ~needle:"regressed" md);
+  (* one invocation: wall shows the delta but never a verdict *)
+  let olly1 =
+    nd
+      [
+        line "hot" "a" 0 [ ("wall_time", 10.0) ];
+        line "hot" "b" 0 [ ("wall_time", 11.0) ];
+      ]
+  in
+  (match
+     Report.render ~manifest ~olly:(Some olly1) ~perf:None
+       ~baseline:"ocaml-base" ~candidates:[ "ocaml-pr" ] ()
+   with
+  | None -> fail "report: no output for the n=1 contract"
+  | Some md ->
+    check_contains ~name:"one invocation: wall is marked indicative"
+      ~needle:"(n=1)*" md;
+    check_true ~name:"one invocation: no wall verdict even at +10%"
+      (not (contains ~needle:"+10.0% \xe2\xac\x86" md));
+    check_contains ~name:"the gate is explained in a footnote"
+      ~needle:"indicative only" md;
+    check_contains ~name:"missing perf renders as a dash" ~needle:"| -- |" md);
+  (* single runtime: absolute values, no verdicts *)
+  match
+    Report.render ~manifest ~olly:(Some olly) ~perf:(Some perf)
+      ~baseline:"ocaml-base" ~candidates:[] ()
+  with
+  | None -> fail "report: no output for a single-runtime contract"
+  | Some md ->
+    check_contains ~name:"single runtime reports absolute medians"
+      ~needle:"absolute medians" md;
+    check_true ~name:"single runtime has no verdict marks"
+      (not (contains ~needle:"\xe2\xac\x86" md))
+
 let test_help () =
   let h =
     Help.render ~facts ~sweepable ~machines:[ "monolith" ] ~cap_seconds:7200.
@@ -1717,6 +1844,7 @@ let () =
   test_pins ();
   test_server ();
   test_execution ();
+  test_report ();
   test_help ();
   ok "done";
   Printf.printf "\n%d checks, %d failures\n" !checks !failures;
