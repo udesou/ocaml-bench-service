@@ -45,6 +45,36 @@ sync_once() {
   # Without this, Pages' Jekyll pass silently drops the dashboard assets
   # (everything under _observablehq/).
   touch "$DIR/.nojekyll"
+  # Pages has no directory listing, so the run pages' "bundle" links would
+  # 404: give each published bundle a generated index.html (deterministic, so
+  # an unchanged bundle produces no git diff).  Only the PUBLISHED copy gets
+  # these; the store itself stays free of presentation files.
+  python3 - "$DIR" <<'PYEOF'
+import os, sys, html
+runs = os.path.join(sys.argv[1], "runs")
+for run in (sorted(os.listdir(runs)) if os.path.isdir(runs) else []):
+    d = os.path.join(runs, run)
+    if not os.path.isdir(d):
+        continue
+    rows = []
+    for dirpath, dirnames, filenames in os.walk(d):
+        dirnames.sort()
+        for f in sorted(filenames):
+            p = os.path.join(dirpath, f)
+            rel = os.path.relpath(p, d)
+            if rel == "index.html":
+                continue
+            rows.append((rel, os.path.getsize(p)))
+    items = "\n".join(
+        f'<li><a href="{html.escape(r)}">{html.escape(r)}</a>'
+        f' <small>{s:,} B</small></li>' for r, s in rows)
+    open(os.path.join(d, "index.html"), "w").write(
+        f"<!doctype html><meta charset=\"utf-8\"><title>{html.escape(run)}</title>\n"
+        f"<body style=\"font:14px/1.6 monospace;max-width:60rem;margin:2rem auto;padding:0 1rem\">\n"
+        f"<h1>{html.escape(run)}</h1>\n"
+        f"<p><a href=\"../../run.html#{html.escape(run)}\">run page</a></p>\n"
+        f"<ul>\n{items}\n</ul>\n")
+PYEOF
   git -C "$DIR" add -A
   if ! git -C "$DIR" diff --cached --quiet; then
     git -C "$DIR" commit --quiet -m "sync $(date -u +%Y-%m-%dT%H:%M:%SZ)"
