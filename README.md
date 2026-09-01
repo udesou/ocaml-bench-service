@@ -9,7 +9,7 @@ It is the request-and-scheduling layer around three existing pieces: the
 [running-ng](https://github.com/udesou/running-ng) benchmark runner, the
 [macro-benches](https://github.com/ocaml-bench/macro-benches) suites, and the
 [ocaml-bench-dashboard](https://github.com/udesou/ocaml-bench-dashboard) data
-contract and viewer. It deliberately reimplements none of them.
+contract and viewer.
 
 ## What using it looks like
 
@@ -32,15 +32,6 @@ the results:
 > |---|---|---|---|
 > | `irmin_mem_rw` | +0.5% | +3.6% ⬆ | -32.8% ⬇ |
 
-The three metrics are reported individually, on purpose: no single number
-gets to decide "regression". Floating-point changes can regress instruction
-counts while wall time barely moves; RSS can step for allocator reasons that
-have nothing to do with the compiler. So each column carries its own verdict
-mark, wall time gets none at all below 3 invocations (one invocation of a
-noisy metric is weather, not climate), and RSS needs at least 1 MiB of real
-movement. The thresholds are configuration, not code, and are provisional
-until we have measured the machine's noise floor.
-
 Every run also gets:
 
 - a **live page**: queued, then running with a phase timeline, then the
@@ -49,7 +40,7 @@ Every run also gets:
   values, parameter sweeps, curves, space against time with Pareto
   frontiers;
 - a public copy of all of it on **GitHub Pages**, where the results repo
-  doubles as the archive.
+  doubles as the archive. (provisionally)
 
 ## The `/bench` grammar
 
@@ -66,64 +57,37 @@ Every run also gets:
 /bench priority=top         # jump the queue (admin-only)
 /bench cancel <run-id>      # the id is in the run's acknowledgement
 /bench rerun                # clean slate: rebuild everything
-/bench help
+/bench help                 # help about the commands.
 ```
 
 The baseline defaults to the PR's merge base, so a bare `/bench` answers the
-question people actually have: *does this change performance?*
-
-The repetition key is `invocations=`: each one runs every benchmark in a
-fresh process, which is what running-ng's `invocations:` means. "Iterations"
-is not a word this service uses, and the old spelling gets a pointer to the
-new one.
-
-`/bench help` is generated at request time from the benchmark suite
-definitions and the data contract's vocabulary, so it cannot drift from what
-is accepted. Sweep parameters take either the `OCAMLRUNPARAM` letter (`o`)
+question *does this change performance?* using the default benchmarks and 3 
+invocations to minimize noise. Sweep parameters take either the `OCAMLRUNPARAM` letter (`o`)
 or the contract's canonical name (`space_overhead`).
 
 ## Who can trigger a run
 
-An explicit allowlist of GitHub logins, not GitHub's `author_association`. A
-run costs about an hour of exclusive machine time and executes compiler code
-from a pull request, so triggering one is a privilege rather than something
-to infer from repository permissions.
-
-There are two roles. **Users** (the allowlist) submit, watch, and cancel
-their own runs. **Admins** additionally operate the service; only they may
-spend other people's time with `force=true` or `priority=top`.
+We maintain an allowlist of GitHub logins. Please contact 
+@tmcgilchrist or @udesou to be added to the allowlist.
 
 ## How it is put together
 
-One server, one agent, and static pages; the pieces talk Cap'n Proto and
-files, nothing else.
+One server, one agent, and static pages:
 
-- **`bench-serve`** owns the request side: grammar, allowlist, validation,
-  cost cap, pinning every ref to a commit, and a durable queue where each
-  accepted run is a directory that grows into the run's permanent bundle.
-  Access is a **capability file**: the daemon writes one per configured
-  login, and handing someone their file is granting access. There are no
-  passwords or tokens anywhere else.
-- **`bench-agent`** lives on the bench machine and dials out; the machine
-  accepts no inbound connections at all. It claims work, checks out the
-  exact pinned sources, runs running-ng under a timeout in its own process
+- **`bench-serve`** owns the request side: grammar, allowlist, request validation,
+  and construction a run spec. Access is a **capability file**: the daemon 
+  writes one per configured login, and handing someone their file is granting 
+  access. There are no passwords or tokens anywhere else.
+- **`bench-agent`** lives on the bench machine and dials out. It claims work, checks out the
+  exact pinned sources, runs the orchestrator under a timeout in its own process
   group, heartbeats every 30 seconds (a cancellation arrives as the reply),
-  and uploads the artifacts, on failure as well as success. If an agent
+  and uploads the artifacts on failure as well as success. If an agent
   dies, its lease expires and the run becomes claimable again.
 - **The webview** is static pages over the store's files: a runs index, a
-  per-run page, and one dashboard per finished run, optionally published to
+  per-run page, and one dashboard per finished run, provisionally published to
   a GitHub Pages repo so results have a public home.
 - **The bot** posts whatever markdown the server renders, verbatim: the
-  acknowledgement, refusals, and the completion with its result tables. It
-  understands nothing about benchmarks, which is the point.
-
-Requests are strict on purpose: a ref like `trunk` is refused (two runs
-labelled "trunk" must be the same commit or they are not comparable), the
-baseline is the merge base rather than the PR head (swapping them inverts the
-sign of every delta), and cost is estimated and capped before anything
-expensive starts. Rejection messages are part of the product; they get posted
-to pull requests verbatim, so the tests assert their exact wording. The full
-set of rules, and the reasons each one exists, are in [CLAUDE.md](CLAUDE.md).
+  acknowledgement, refusals, and the completion with its result tables.
 
 ## Running your own
 
@@ -134,7 +98,7 @@ scripts/server-setup.sh              # checks prerequisites, clones, builds
 cp service.example.json service.json # allowlist, admins, machines
 cp server.env.example server.env     # addresses, Pages repo
 scripts/start_server.sh              # server + webview + bot + dashboards
-                                     # + pages, one screen session
+                                     # + pages, in one screen session
 ```
 
 Bench machine:
@@ -165,10 +129,7 @@ make check           # all three
 ```
 
 You also need `python3` with PyYAML, a checkout of running-ng, and the
-`capnp` schema compiler. Config merging, tag filtering and validation are
-answered by running-ng itself through a single bridge script rather than
-reimplemented here; two implementations of the same implicit schema is
-exactly how pipelines like this drift.
+`capnp` schema compiler.
 
 `make test` runs against snapshots, so it fails only when this repo changes;
 `make live` pushes generated configs through running-ng's real validators, so
@@ -211,11 +172,11 @@ result tables back on the PR, dashboard, public pages. Not there yet:
   which need machine facts the agent does not report yet;
 - **cache hygiene on the bench machine**: switch provenance is recorded but
   not yet enforced, and admin-triggered eviction is designed but not wired;
-- **per-benchmark live progress**: a small running-ng plugin, so the run
+- **per-benchmark live progress**: a small orchestrator plugin, so the run
   page can show benchmarks ticking by instead of one long "measuring" phase;
 - **a verdict chip in the runs index**: waiting on repeat-run noise data, so
   it can mean "moved beyond this machine's measured noise" instead of a
-  guess.
+  guess. (To be done per benchmarking machine)
 
 ## Licence
 
