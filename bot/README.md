@@ -1,8 +1,8 @@
 # The PR bot
 
 Turns `/bench` comments on the fork's pull requests into API A submissions
-and posts the server's markdown back. It is deliberately a *thin* client
-(Q13): no grammar, no rendering, no policy -- the allowlist decision, the
+and posts the server's markdown back. It is deliberately a *thin* client:
+no grammar, no rendering, no policy -- the allowlist decision, the
 resolution of the PR head and merge base, and every message all come from the
 server. Two interchangeable delivery mechanisms, same behaviour:
 
@@ -20,15 +20,17 @@ bot/poll.sh <owner/repo> [interval-seconds]     # e.g. bot/poll.sh udesou/ocaml 
 
 Polls the fork's issue comments (only ones created after startup), submits
 each `/bench …` through `bot.cap` asserting the commenter, and posts the
-reply with `gh`'s logged-in account. Handled comment ids live in
+reply with `gh`'s logged-in account. It also posts each run's completion
+notice: when a run reaches a terminal state the server renders
+`completion.md` (verdict, duration, the result tables, links) into the run's
+bundle, and the poller posts it once to the run's PR. Handled comment ids live in
 `<state>/bot-seen`, so restarts never double-post -- and the server's
 idempotency key backstops even that. An unlisted commenter gets the polite
 allowlist refusal, posted publicly, which is the intended behaviour.
 
 ## Action-mode setup
 
-1. **Run the server somewhere GitHub's runners can reach** (Q3 -- host still
-   to be decided):
+1. **Run the server somewhere GitHub's runners can reach**:
 
    ```sh
    bench-serve --service-config service.json \
@@ -47,7 +49,7 @@ allowlist refusal, posted publicly, which is the intended behaviour.
 3. **Host a prebuilt `bench-cli`**: `dune build bin/bench_cli.exe`, upload the
    binary (e.g. as a release asset of this repository), and set the repository
    variable `BENCH_CLI_URL` to its URL. The Action downloads it per run -- a
-   capnp client can't be curl (Q15), so the binary stands in.
+   capnp client can't be curl, so the binary stands in.
 
 4. **Copy `bench.yml` into the fork** as `.github/workflows/bench.yml`.
 
@@ -56,7 +58,7 @@ allowlist refusal, posted publicly, which is the intended behaviour.
 Everything the webhook and one `gh api` call know: repo, PR number and URL,
 comment id and URL, the commenter's login (verified by GitHub), the PR head
 sha at comment time, and the target branch. The server still resolves the
-merge base itself (`pr_context` in the architecture document, §5.3).
+merge base itself (the `pr_context` payload).
 
 ## v1 reporting
 

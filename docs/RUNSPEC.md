@@ -16,7 +16,7 @@ spec: checkout paths, log dir, opam root, the process environment (the agent
 sets `RUNNING_TAG` from `selection.tags`, comma-joined), and the command line
 (running-ng's entry script and how to supervise it are agent knowledge).
 Execution-scoped directives -- cache bypass for `rerun`, the timeout -- travel
-in the §6.2 *assignment* at claim time, never in the spec.
+in the *assignment* the agent receives at claim time, never in the spec.
 
 **Everything is resolved before dispatch.** Every source and runtime carries a
 git sha, never a ref, so the spec is executable and archivable as-is. The
@@ -25,7 +25,7 @@ server pins sources from the checkouts it already reads
 checkout's `origin`).
 
 **No credentials, no transport, ever.** The bench machine executes PR compiler
-code and is treated as compromisable; the server never connects to it (Q1).
+code and is treated as compromisable; the server never connects to it.
 
 **Versioned.** `spec_version` is bumped on any incompatible change; a consumer
 must refuse a major version it does not know. The service has never shipped,
@@ -41,13 +41,13 @@ The run's identity everywhere: the queue row, the store bundle, the webview
 row. (Not the contract's `run_id`: running-ng names its run directory itself.)
 
 ### `run_key` -- string or null
-The §8.1 content identity of the measurement, used to answer repeat requests
+The content identity of the measurement, used to answer repeat requests
 from the store. Computed by the server (`lib/run_key.ml`); **null until agent
 reports supply the machine facts it hashes** (tool versions, environment
 fingerprint) -- a partial key would be a wrong one.
 
 ### `family` -- string
-`"macro"` today; `"micro"` reserved (§12). Names which benchmark collection
+`"macro"` today; `"micro"` reserved. Names which benchmark collection
 the run draws from, so micro becomes a data change rather than a schema change.
 
 ### `sources` -- list of `{name, repo, commit}`
@@ -109,16 +109,16 @@ Advisory strings surfaced in the acknowledgement. None blocks a run.
 
 ## What is deliberately NOT here
 
-- **Machine-side anything**: paths, env, command line, ssh (§6.1 -- the
-  agent's concern). The agent discovers the run directory under its own
+- **Machine-side anything**: paths, env, command line, ssh (the agent's
+  concern). The agent discovers the run directory under its own
   `LOG_DIR` (running-ng names it), runs the entry script in its own process
   group (`setsid`, so cancellation can SIGTERM the group before SIGKILL), and
   reuses switches per its provenance records.
-- **The timeout**: execution-scoped, carried by the §6.2 assignment at claim
+- **The timeout**: execution-scoped, carried by the assignment at claim
   time. The shared formula (`max(90 min, 2.5 × estimate)`) lives in
   `Runspec.timeout_seconds`.
 - **The audit trail**: who asked, from where, the verbatim command -- that is
-  `request.json` in the bundle (§8), written by the server beside the spec.
+  `request.json` in the bundle, written by the server beside the spec.
 - **Credentials and results destinations**: the agent uploads; the server
   publishes.
 - **Retry policy**: a spec describes one run; re-running is the queue's

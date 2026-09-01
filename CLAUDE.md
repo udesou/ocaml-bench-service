@@ -23,6 +23,9 @@ document is required reading.
 ## Hard rules (do not violate)
 
 - **Do not comment on PRs, or add to PRs, unless explicitly asked to.**
+- **No em-dashes anywhere but this file.** Every other file (READMEs, docs,
+  reports, generated markdown, code comments) uses commas, colons, parens,
+  or "--" instead.
 - **No "Claude"/Anthropic/`Co-Authored-By: Claude` in commit messages.**
 - **Commit only when asked.**
 - **Never reimplement running-ng or contract semantics.** Config merge, tag
@@ -153,6 +156,15 @@ document is required reading.
   checkout and records the dashboard pin in .built.json -- rebuild-on-bump is
   future work.
 - `scripts/rng_helper.py` -- `facts` | `validate` | `tagfilter`.
+- `bin/main.ml` -- `bench-gen`, the developer tool (generation without a
+  server; the README deliberately only mentions it). The commands:
+  `bench-gen help | vocab | parse --comment "..." | authz --service-config
+  service.json --login X | spec --comment "..." --variant version:base:5.5.0
+  --variant commit:pr-1234:<sha> --out /tmp --check`. `spec` writes
+  `<id>.yml` (the running-ng config) and `<id>.runspec.json`; `--format
+  json` prints the spec; `--check` pushes the config through running-ng's
+  own validate() and validate_tags(). Its --macro-bench-dir/--log-dir/
+  --opamroot flags are dev-local conveniences, not service paths.
 - `test/` -- table tests against `test/fixtures/` snapshots.
 - `scripts/live_check.sh` -- the same generation against a pinned running-ng ref
   (`origin/adding-ocaml-support`), validated through running-ng's own checks.

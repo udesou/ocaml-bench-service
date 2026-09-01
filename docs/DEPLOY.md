@@ -10,9 +10,9 @@ The service's front half is three pieces in three places:
 | `bench-agent` | the bench machine | its `agent-<machine>.cap`; `scripts/agent-setup.sh` provisions the rest |
 
 The server validates, resolves, queues, and **acknowledges**; the run
-directories it writes under `<state>/runs/` are the queue the agent drains.
-`bench-agent` is stage 1: it claims, heartbeats, streams events, uploads and
-finishes over the wire, but its executor is a stub -- no benchmark runs yet.
+directories it writes under `<state>/runs/` are the queue the agent drains,
+and grow into each run's permanent bundle as the agent uploads artifacts and
+the server renders the report.
 
 ## Standing the server up (laptop or VPS, same steps)
 
@@ -20,8 +20,9 @@ finishes over the wire, but its executor is a stub -- no benchmark runs yet.
 scripts/server-setup.sh              # prerequisites, sibling clones, build
 cp service.example.json service.json # allowlist, admins, machines
 cp server.env.example server.env     # the deployment's address
-scripts/start_server.sh              # server + webview + bot, one screen
-                                     # session ("bench"; also: stop|status)
+scripts/start_server.sh              # server, webview, bot, dashboards,
+                                     # pages: one screen session ("bench";
+                                     # also: stop|status)
 ```
 
 (Or run the pieces by hand -- `scripts/serve.sh`, `scripts/webview.sh 8080`,
@@ -29,8 +30,8 @@ scripts/start_server.sh              # server + webview + bot, one screen
 processes.)
 
 Set `BENCH_BASE_URL` in `server.env` to where the webview is served
-(e.g. `http://host:8080`): acknowledgement links then anchor into the index
-(`…/#run-id`).
+(the Pages URL, or `http://host:8080` for LAN-only use): acknowledgement and
+completion links then land on each run's own page.
 
 On start, `bench-serve` prints the capability files it wrote:
 `<state>/caps/<login>.cap` for every configured login, and `bot.cap`.
@@ -121,7 +122,7 @@ claim and finish it, see the webview row go `queued -> running -> done`.
 `scripts/publish_pages.sh` syncs the whole webview root -- index, per-run
 pages, run bundles, dashboards -- into a GitHub repo and pushes; with Pages
 enabled on that repo's main branch, everything is served publicly, and the
-repo doubles as the git-backed store (Q2's lean). Setup, once:
+repo doubles as the results archive. Setup, once:
 
 ```sh
 gh repo create <user>/ocaml-bench-results --public   # Pages on private needs Pro
