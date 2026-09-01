@@ -1602,7 +1602,7 @@ let test_execution () =
       check_contains ~name:"the completion notice counts cells"
         ~needle:"20 passed, 1 failed" md;
       check_contains ~name:"the report rides in the completion verbatim"
-        ~needle:"`ocaml-c0f8c8c` vs `ocaml-5.5.0`" md;
+        ~needle:"Candidate `ocaml-c0f8c8c` vs baseline `ocaml-5.5.0`" md;
       check_contains ~name:"one invocation: the embedded wall delta is gated"
         ~needle:"(n=1)*" md
     | None -> fail "no completion.md after the done finish");
@@ -1757,8 +1757,10 @@ let test_report () =
    with
   | None -> fail "report: no output for a populated contract"
   | Some md ->
-    check_contains ~name:"report names the comparison"
-      ~needle:"`ocaml-pr` vs `ocaml-base`" md;
+    check_contains ~name:"report names both roles"
+      ~needle:"Candidate `ocaml-pr` vs baseline `ocaml-base`" md;
+    check_contains ~name:"the sign is explained by name"
+      ~needle:"negative = `ocaml-pr` is better" md;
     check_contains ~name:"a significant instructions move gets the mark"
       ~needle:"+5.0% \xe2\xac\x86" md;
     check_true ~name:"a flat benchmark gets no mark"

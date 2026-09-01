@@ -195,8 +195,10 @@ let render ?(thresholds = default_thresholds) ~manifest ~olly ~perf ~baseline
     in
     List.iter
       (fun cand ->
-        add "**`%s` vs `%s`** (negative = candidate is better)\n\n" cand
-          baseline;
+        add
+          "**Candidate `%s` vs baseline `%s`** (deltas relative to the \
+           baseline; negative = `%s` is better)\n\n"
+          cand baseline cand;
         add "| benchmark |%s\n"
           (String.concat ""
              (List.map (fun (_, l) -> " " ^ l ^ " |") headline_metrics));

@@ -25,7 +25,8 @@ many programs, configs and invocations that selects, a time estimate, and a
 link to the run's live page. When the run finishes, a second comment carries
 the results:
 
-> **`ocaml-5.5.0` vs `ocaml-5.4.1`** (negative = candidate is better)
+> **Candidate `ocaml-5.5.0` vs baseline `ocaml-5.4.1`** (deltas relative
+> to the baseline; negative = `ocaml-5.5.0` is better)
 >
 > | benchmark | wall | instructions | max RSS |
 > |---|---|---|---|
