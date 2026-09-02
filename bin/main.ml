@@ -241,6 +241,7 @@ let cmd_help o =
   let pl = resolve_placement o svc in
   print_string
     (Help.render ~facts ~sweepable ~machines ~cap_seconds:pl.p_cap
+       ~flavors:(match svc with Some c -> c.Service_config.flavors | None -> Variant.default_flavors)
        ~default_machine)
 
 let cmd_authz o =

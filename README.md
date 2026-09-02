@@ -48,6 +48,8 @@ Every run also gets:
 /bench                      # default set, 3 invocations (~1h)
 /bench vs=trunk             # choose the baseline
 /bench vs=5.4.1,trunk       # compare more than two compilers
+/bench vs=5.5.0,5.5.0+fp    # build flavors: +fp (frame pointers), +flambda;
+                            #   combine them: 5.5.0+fp+flambda
 /bench tag=small            # small | default | large | huge | legacy | all
 /bench tag=small,large      # several sets: their union
 /bench invocations=5        # fresh-process repetitions, up to 10

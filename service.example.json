@@ -42,6 +42,22 @@
   "cap_seconds": 7200,
   "cell_seconds": 30,
 
+  "flavors": [
+    {
+      "_comment": [
+        "Build flavors: the vs= `+name` suffixes (vs=5.5.0,5.5.0+fp).",
+        "A flavor is a named, allowlisted configure-time variant; adding",
+        "one is an edit here, not a deploy. List order is canonical (it",
+        "fixes runtime names like ocaml-5.5.0-fp-flambda); names and",
+        "configure_args must both be unique. Omit the key entirely for",
+        "the defaults, which are exactly these two."
+      ],
+      "name": "fp",
+      "configure_args": "--enable-frame-pointers"
+    },
+    { "name": "flambda", "configure_args": "--enable-flambda" }
+  ],
+
   "report": {
     "_comment": [
       "Verdict bands and gates for report.md (lib/report.ml). Provisional",

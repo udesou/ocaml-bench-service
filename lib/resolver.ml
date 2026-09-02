@@ -49,6 +49,7 @@ let offline_variant entry =
         role = Variant.Candidate;
         repo = None;
         configure_args = "";
+        flavor = None;
       }
   else if is_hex entry && String.length entry >= 7 then
     Ok
@@ -58,6 +59,7 @@ let offline_variant entry =
         role = Variant.Candidate;
         repo = None;
         configure_args = "";
+        flavor = None;
       }
   else
     err
@@ -68,7 +70,35 @@ let offline_variant entry =
 
 let ( let* ) = Result.bind
 
-let cli_variants ~resolve ~vs =
+(* `5.5.0+fp+flambda`: a vs= entry is a compiler spec plus build flavors.
+   Parsed HERE, once for every resolver, so the compiler part travels on to
+   version/sha/ref resolution unchanged.  The TABLE is policy and comes from
+   the service config (Variant.default_flavors when it says nothing); the
+   flavors become configure_args and a name suffix in the table's canonical
+   order, so `+flambda+fp` and `+fp+flambda` are the same build with the
+   same runtime name. *)
+let split_flavors ~flavors entry =
+  match Util.split_on ~sep:'+' entry with
+  | [] | [ _ ] -> Ok (entry, None)
+  | base :: fs -> (
+    let names = List.map fst flavors in
+    match List.find_opt (fun f -> not (List.mem_assoc f flavors)) fs with
+    | Some u ->
+      err "`%s` is not a build flavor.%s The flavors: %s." u
+        (Util.suggest ~candidates:names u)
+        (String.concat ", " names)
+    | None -> Ok (base, Some (Variant.canonical_flavors ~flavors fs)))
+
+let with_flavors ~flavors resolve entry =
+  let* base, f = split_flavors ~flavors entry in
+  let* v = resolve base in
+  match f with
+  | None -> Ok v
+  | Some (suffix, configure_args) ->
+    Ok { v with Variant.configure_args; flavor = Some suffix }
+
+let cli_variants ~flavors ~resolve ~vs =
+  let resolve = with_flavors ~flavors resolve in
   match vs with
   | [] ->
     err
@@ -87,7 +117,7 @@ let cli_variants ~resolve ~vs =
     in
     Ok (Variant.with_role Variant.Baseline b :: cs)
 
-let offline =
+let offline_with ~flavors =
   {
     variants =
       (fun ~origin ~vs ->
@@ -97,8 +127,10 @@ let offline =
             "PR-triggered runs need the server's GitHub resolution (the PR \
              head and its merge base), which is not wired up yet. Use the CLI \
              with `vs=` for now."
-        | Api.Cli -> cli_variants ~resolve:offline_variant ~vs);
+        | Api.Cli -> cli_variants ~flavors ~resolve:offline_variant ~vs);
   }
+
+let offline = offline_with ~flavors:Variant.default_flavors
 
 (* --- the GitHub-backed resolver -------------------------------------------- *)
 
@@ -119,6 +151,9 @@ type github = {
       (** pr_context.repo ("owner/name") -> clone URL; overridable in tests *)
   cache_dir : string;  (** bare repo used only for merge-base computation *)
   default_base : string;  (** branch a PR targets when the bot did not say *)
+  flavors : (string * string) list;
+      (** the build-flavor table (name -> configure args), from the service
+          config; order is canonical *)
 }
 
 let github_defaults ~cache_dir =
@@ -128,6 +163,7 @@ let github_defaults ~cache_dir =
     url_of_repo = (fun repo -> "https://github.com/" ^ repo);
     cache_dir;
     default_base = "trunk";
+    flavors = Variant.default_flavors;
   }
 
 let git_run ~git args =
@@ -199,6 +235,7 @@ let github_variant g entry =
         role = Variant.Candidate;
         repo = Some g.compiler_repo;
         configure_args = "";
+        flavor = None;
       }
   else
     let pinned sha =
@@ -208,6 +245,7 @@ let github_variant g entry =
         role = Variant.Candidate;
         repo = Some g.compiler_repo;
         configure_args = "";
+        flavor = None;
       }
     in
     if looks_like_version entry then
@@ -291,7 +329,7 @@ let github g =
     variants =
       (fun ~origin ~vs ->
         match origin.Api.kind with
-        | Api.Cli -> cli_variants ~resolve:(github_variant g) ~vs
+        | Api.Cli -> cli_variants ~flavors:g.flavors ~resolve:(github_variant g) ~vs
         | Api.Pr_comment ctx ->
           let url = g.url_of_repo ctx.Api.repo in
           let* head_sha =
@@ -317,11 +355,12 @@ let github g =
               (* the head sha exists only on the PR's own repository *)
               repo = Some url;
               configure_args = "";
+        flavor = None;
             }
           in
           if vs <> [] then
             (* vs= chooses the baseline; the PR head stays the first candidate *)
-            let* resolved = cli_variants ~resolve:(github_variant g) ~vs in
+            let* resolved = cli_variants ~flavors:g.flavors ~resolve:(github_variant g) ~vs in
             match resolved with
             | baseline :: extras -> Ok (baseline :: head :: extras)
             | [] -> err "empty `vs=` resolution"
@@ -342,6 +381,7 @@ let github g =
                      PR's repository is guaranteed to serve it *)
                   repo = Some url;
                   configure_args = "";
+        flavor = None;
                 };
                 head;
               ]);

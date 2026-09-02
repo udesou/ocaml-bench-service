@@ -34,6 +34,10 @@ type t = {
   machines : machine list;
   cap_seconds : float;
   cell_seconds : float;
+  flavors : (string * string) list;
+      (* build flavors: grammar name -> configure args, canonical order.
+         The vs= `+name` suffixes resolve against this; names and args must
+         both be unique or runtime names stop being injective. *)
   report : Report.thresholds;
       (* verdict bands + gates for report.md (§5.5); provisional until Q12 *)
 }
@@ -76,6 +80,45 @@ let of_json j =
   let* account = str (member "account" botj) in
   let* token_env = str ~default:"BENCH_BOT_TOKEN" (member "token_env" botj) in
   let* results_repo = str (member "results_repo" j) in
+  let* flavors =
+    match member "flavors" j with
+    | `Null -> Ok Variant.default_flavors
+    | `List l ->
+      let* fs =
+        List.fold_left
+          (fun acc f ->
+            let* acc = acc in
+            let* name = str (member "name" f) in
+            let* args = str (member "configure_args" f) in
+            if name = "" || args = "" then
+              Error "a flavor needs a non-empty `name` and `configure_args`"
+            else if
+              not
+                (String.for_all
+                   (function
+                     | 'a' .. 'z' | '0' .. '9' | '-' | '_' -> true
+                     | _ -> false)
+                   name)
+            then
+              Error
+                (Printf.sprintf
+                   "flavor name `%s`: lowercase letters, digits, `-`, `_` \
+                    only (it becomes part of switch names)"
+                   name)
+            else Ok (acc @ [ (name, args) ]))
+          (Ok []) l
+      in
+      let dup key l =
+        List.exists (fun x -> List.length (List.filter (( = ) (key x)) (List.map key l)) > 1) l
+      in
+      if dup fst fs then Error "`flavors` has a duplicate name"
+      else if dup snd fs then
+        Error
+          "`flavors` has two names for the same configure_args -- runtime \
+           names would stop being injective"
+      else Ok fs
+    | _ -> Error "`flavors` must be a list of {name, configure_args}"
+  in
   let* machines =
     match member "machines" j with
     | `List ms ->
@@ -118,6 +161,7 @@ let of_json j =
           cap_seconds = float_or Cost.default_cap_seconds (member "cap_seconds" j);
           cell_seconds =
             float_or Cost.default_cell_seconds (member "cell_seconds" j);
+          flavors;
           report =
             (let r = member "report" j in
              let d = Report.default_thresholds in

@@ -77,6 +77,7 @@ let base_v =
     role = Variant.Baseline;
     repo = None;
     configure_args = "";
+    flavor = None;
   }
 
 let head_v =
@@ -86,6 +87,7 @@ let head_v =
     role = Variant.Candidate;
     repo = None;
     configure_args = "";
+    flavor = None;
   }
 
 let ctx ?(program_count = 20) ?(cap_seconds = Cost.default_cap_seconds) () =
@@ -478,12 +480,22 @@ let test_variant_naming () =
        (sha, configure_args): running-ng trusts the config author -- us --
        for uniqueness, so two configurations of one commit must not share a
        switch. *)
+    (* canonical flavor args earn the friendly suffix instead of the digest *)
     check_eq ~name:"configure args enter the runtime name"
-      ~expected:("ocaml-fp-c0f8c8c-" ^ Variant.args_slug "--enable-frame-pointers")
+      ~expected:"ocaml-fp-c0f8c8c-fp"
       ~actual:(Variant.runtime_name v);
     check_true ~name:"different args, different name"
       (Variant.runtime_name v
-      <> Variant.runtime_name { v with configure_args = "--enable-flambda" })
+      <> Variant.runtime_name
+           {
+             v with
+             configure_args = "--enable-flambda";
+             (* flavor and args travel together: whoever changes one owns
+                the other (the resolver and of_cli_string both do) *)
+             flavor =
+               Variant.suffix_of_args ~flavors:Variant.default_flavors
+                 "--enable-flambda";
+           })
   | Error e -> fail "configure args variant rejected: %s" e);
   (* The generated config carries the list running-ng feeds to
      `opam compiler create --configure-command`. *)
@@ -1338,6 +1350,106 @@ let test_server () =
            metas)
   | Error e -> fail "list: %s" (markdown e)
 
+(* --- build flavors: the vs= `+fp` / `+flambda` suffixes -------------------- *)
+
+let test_flavors () =
+  let v ?flavor args =
+    {
+      Variant.label = "";
+      spec = Variant.Version "5.5.0";
+      role = Variant.Candidate;
+      repo = None;
+      configure_args = args;
+      flavor;
+    }
+  in
+  check_eq ~name:"a flavor suffix names the runtime like the existing switches"
+    ~expected:"ocaml-5.5.0-fp"
+    ~actual:(Variant.runtime_name (v ~flavor:"fp" "--enable-frame-pointers"));
+  check_true ~name:"arbitrary configure args still get the digest suffix"
+    (Util.starts_with ~prefix:"ocaml-5.5.0-c"
+       (Variant.runtime_name (v "--disable-tsan")));
+  let cli = { Api.kind = Api.Cli; id = "cli:x" } in
+  (match
+     Resolver.offline.Resolver.variants ~origin:cli
+       ~vs:[ "5.5.0"; "5.5.0+fp"; "5.5.0+flambda+fp" ]
+   with
+  | Error e -> fail "flavored vs: %s" (markdown e)
+  | Ok [ b; c1; c2 ] ->
+    check_eq ~name:"a bare entry stays bare" ~expected:"ocaml-5.5.0"
+      ~actual:(Variant.runtime_name b);
+    check_eq ~name:"+fp resolves to the fp runtime" ~expected:"ocaml-5.5.0-fp"
+      ~actual:(Variant.runtime_name c1);
+    check_eq ~name:"the user's flavor order does not matter"
+      ~expected:"ocaml-5.5.0-fp-flambda" ~actual:(Variant.runtime_name c2);
+    check_eq ~name:"flavors become canonical configure args"
+      ~expected:"--enable-frame-pointers --enable-flambda"
+      ~actual:c2.Variant.configure_args;
+    check_true ~name:"the first entry is still the baseline"
+      (b.Variant.role = Variant.Baseline)
+  | Ok _ -> fail "expected exactly three variants");
+  (match Resolver.offline.Resolver.variants ~origin:cli ~vs:[ "5.5.0+turbo" ] with
+  | Error e ->
+    check_contains ~name:"an unknown flavor is refused with the list"
+      ~needle:"build flavor" e.Api.error_markdown
+  | Ok _ -> fail "an unknown flavor was accepted");
+  (* the table is CONFIG: a deployment adds a flavor with an edit *)
+  (match
+     Service_config.of_string
+       {|{ "bot": {"account":"a","token_env":"T"}, "results_repo":"r",
+           "allowlist":["u"],
+           "flavors":[{"name":"fp","configure_args":"--enable-frame-pointers"},
+                      {"name":"tsan","configure_args":"--enable-tsan"}],
+           "machines":[{"name":"m"}] }|}
+   with
+  | Error e -> fail "flavored config: %s" e
+  | Ok cfg -> (
+    match
+      (Resolver.offline_with ~flavors:cfg.Service_config.flavors)
+        .Resolver.variants ~origin:cli
+        ~vs:[ "5.5.0"; "5.5.0+tsan" ]
+    with
+    | Ok [ _; c ] ->
+      check_eq ~name:"a configured flavor resolves like a built-in one"
+        ~expected:"ocaml-5.5.0-tsan"
+        ~actual:(Variant.runtime_name c);
+      check_eq ~name:"...with its configured args" ~expected:"--enable-tsan"
+        ~actual:c.Variant.configure_args
+    | Ok _ -> fail "expected two variants"
+    | Error e -> fail "configured flavor: %s" (markdown e)));
+  (match
+     Service_config.of_string
+       {|{ "bot": {"account":"a","token_env":"T"}, "results_repo":"r",
+           "allowlist":["u"],
+           "flavors":[{"name":"fp","configure_args":"--x"},
+                      {"name":"fp","configure_args":"--y"}],
+           "machines":[{"name":"m"}] }|}
+   with
+  | Error e ->
+    check_contains ~name:"duplicate flavor names are refused"
+      ~needle:"duplicate" e
+  | Ok _ -> fail "a duplicate flavor name was accepted");
+  (* end to end: the flavored variant lands in the generated config *)
+  let request =
+    match Request.parse "/bench tag=small invocations=1" with
+    | Ok r -> r
+    | Error e -> failwith e
+  in
+  let variants =
+    match
+      Resolver.offline.Resolver.variants ~origin:cli ~vs:[ "5.5.0"; "5.5.0+fp" ]
+    with
+    | Ok vs -> vs
+    | Error e -> failwith e.Api.error_markdown
+  in
+  match Gen.generate ~ctx:(ctx ()) ~request ~facts ~sweepable ~variants with
+  | Error e -> fail "generate with flavors: %s" (markdown e)
+  | Ok spec ->
+    check_contains ~name:"the config declares the flavored runtime"
+      ~needle:"ocaml-5.5.0-fp" spec.Gen.config_yaml;
+    check_contains ~name:"the config carries the configure args"
+      ~needle:"--enable-frame-pointers" spec.Gen.config_yaml
+
 (* --- 7. the execution side (API B, §6.2) ----------------------------------- *)
 
 (* The same injected deps, plus an "agent": direct calls to the execution
@@ -1809,6 +1921,7 @@ let test_report () =
 let test_help () =
   let h =
     Help.render ~facts ~sweepable ~machines:[ "monolith" ] ~cap_seconds:7200.
+      ~flavors:Variant.default_flavors
       ~default_machine:"monolith"
   in
   (* Help is generated, so it must reflect the fixtures rather than prose. *)
@@ -1844,6 +1957,7 @@ let () =
   test_admin_keys ();
   test_github_resolver ();
   test_pins ();
+  test_flavors ();
   test_server ();
   test_execution ();
   test_report ();

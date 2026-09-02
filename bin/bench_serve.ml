@@ -210,7 +210,8 @@ let deps o ~on_bump =
   in
   let resolver =
     match o.resolver with
-    | "offline" -> Resolver.offline
+    | "offline" ->
+      Resolver.offline_with ~flavors:service.Service_config.flavors
     | "github" ->
       Resolver.github
         {
@@ -218,6 +219,7 @@ let deps o ~on_bump =
              ~cache_dir:(Filename.concat o.state_dir "git-cache"))
           with
           compiler_repo = service.Service_config.compiler_repo;
+          flavors = service.Service_config.flavors;
         }
     | other -> die "unknown resolver %s (github|offline)" other
   in

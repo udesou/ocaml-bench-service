@@ -368,6 +368,7 @@ let render_help deps =
   in
   Help.render ~facts:deps.facts ~sweepable:deps.sweepable ~machines
     ~cap_seconds:deps.service.Service_config.cap_seconds ~default_machine
+    ~flavors:deps.service.Service_config.flavors
 
 let render_ack deps ~run_id ~(request : Request.t) ~(spec : Gen.t) ~machine
     ~queue_position ~variants =

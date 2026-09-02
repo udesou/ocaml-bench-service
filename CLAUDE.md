@@ -171,6 +171,15 @@ document is required reading.
 
 ## Gotchas (hard-won -- don't rediscover)
 
+- **Build flavors are config, not code.** A vs= entry is `<compiler>[+flavor...]`;
+  the table (name -> configure args) is service.json `flavors`, defaulting to
+  fp/flambda (Variant.default_flavors). List order is canonical: `+flambda+fp`
+  and `+fp+flambda` produce one runtime name (`ocaml-X-fp-flambda`, matching
+  the pre-existing switch convention). Validation keeps names and args unique
+  so runtime names stay injective; `Variant.flavor` (the name suffix) and
+  `configure_args` travel together -- whoever sets one owns the other.
+  Consequence: `+` always parses as a flavor separator, so a git branch with
+  a literal `+` in its name cannot be requested via vs=.
 - **The user-facing repetition key is `invocations=`, never `iterations`.**
   It maps 1:1 onto running-ng's `invocations:` (fresh-process repetitions).
   The old spelling is a special-cased rejection that points at the new key --

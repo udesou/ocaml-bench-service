@@ -19,13 +19,57 @@ type t = {
          building it from ocaml/ocaml would fail.  Not part of the runtime
          NAME: a sha is globally unique, so identity is unaffected. *)
   configure_args : string;
-      (* e.g. "--enable-flambda --enable-frame-pointers" (§5.3 runtime_pin),
-         whitespace-separated.  Part of the requested build identity: it goes
-         into the runtime NAME (as a digest, see runtime_name) and into the
-         generated config's `configure_args:` list, which running-ng passes to
-         `opam compiler create --configure-command`.  No grammar key produces
-         it yet (a raised doc question); the CLI's --variant 4th field does. *)
+      (* e.g. "--enable-frame-pointers --enable-flambda", whitespace-separated
+         (the runtime_pin's field).  Part of the requested build identity: it
+         goes into the runtime NAME (see runtime_name) and into the generated
+         config's `configure_args:` list, which running-ng passes to
+         `opam compiler create --configure-command`.  Produced by the
+         grammar's `+<flavor>` suffixes on vs= entries and by bench-gen's
+         --variant 4th field. *)
+  flavor : string option;
+      (* the human suffix for the runtime name when configure_args came from
+         named flavors, e.g. "fp-flambda".  Set by whoever resolved the
+         flavors (the policy owner: the resolver, from the service config's
+         flavor table); None means arbitrary args, which get the digest.
+         Whoever sets it owes the injectivity of (suffix <-> args), which the
+         flavor table's validation guarantees. *)
 }
+
+(* The default flavor table: name -> configure args.  A FLAVOR is a named,
+   allowlisted build variant; the grammar's `+fp` / `+flambda` suffixes on
+   `vs=` entries (`vs=5.5.0,5.5.0+fp,5.5.0+fp+flambda`).  The deployed table
+   lives in service.json (`flavors`, defaulting to this one) so adding a
+   variant is a config edit; the LIST ORDER is the canonical order, so a
+   flavor set maps 1:1 onto a configure_args string and a name suffix
+   regardless of how the user ordered the suffixes -- which keeps
+   runtime_name injective and matches the switch naming convention already
+   in use on the bench machines (running-ng-ocaml-5.5.0-fp-flambda). *)
+let default_flavors =
+  [ ("fp", "--enable-frame-pointers"); ("flambda", "--enable-flambda") ]
+
+(* canonicalize a set of flavor names against a table: (suffix, args),
+   table order, duplicates collapsed *)
+let canonical_flavors ~flavors names =
+  let picked = List.filter (fun (n, _) -> List.mem n names) flavors in
+  ( String.concat "-" (List.map fst picked),
+    String.concat " " (List.map snd picked) )
+
+(* the inverse, for raw args that happen to be exactly a canonical set (the
+   dev tool's --variant path): args -> suffix *)
+let suffix_of_args ~flavors args =
+  let rec subsets = function
+    | [] -> [ [] ]
+    | x :: rest ->
+      let s = subsets rest in
+      List.map (fun t -> x :: t) s @ s
+  in
+  List.find_map
+    (fun sub ->
+      if sub = [] then None
+      else
+        let suffix, a = canonical_flavors ~flavors (List.map fst sub) in
+        if a = args then Some suffix else None)
+    (subsets flavors)
 
 let sha_short sha =
   let n = String.length sha in
@@ -58,7 +102,10 @@ let runtime_name t =
       if label = "" then "ocaml-" ^ s else "ocaml-" ^ label ^ "-" ^ s
   in
   if t.configure_args = "" then base
-  else base ^ "-" ^ args_slug t.configure_args
+  else
+    match t.flavor with
+    | Some suffix -> base ^ "-" ^ suffix
+    | None -> base ^ "-" ^ args_slug t.configure_args
 
 let is_hex s =
   s <> ""
@@ -102,22 +149,26 @@ let of_cli_string s =
      Everything after the third colon is the configure args, verbatim. *)
   match Util.split_on ~sep:':' s with
   | "version" :: label :: v :: args ->
+    let configure_args = String.concat ":" args in
     Ok
       {
         label;
         spec = Version v;
         role = Candidate;
         repo = None;
-        configure_args = String.concat ":" args;
+        configure_args;
+        flavor = suffix_of_args ~flavors:default_flavors configure_args;
       }
   | "commit" :: label :: sha :: args ->
+    let configure_args = String.concat ":" args in
     Ok
       {
         label;
         spec = Commit sha;
         role = Candidate;
         repo = None;
-        configure_args = String.concat ":" args;
+        configure_args;
+        flavor = suffix_of_args ~flavors:default_flavors configure_args;
       }
   | _ ->
     Error

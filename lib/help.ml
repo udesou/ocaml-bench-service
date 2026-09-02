@@ -6,7 +6,8 @@
    the tags moved once already (the input-size ladder), and stale help is how a
    user ends up filing a bug against a working service. *)
 
-let render ~(facts : Facts.t) ~sweepable ~machines ~cap_seconds ~default_machine
+let render ~(facts : Facts.t) ~sweepable ~machines ~cap_seconds
+    ~default_machine ~flavors
     =
   let b = Buffer.create 2048 in
   let add fmt = Printf.ksprintf (Buffer.add_string b) fmt in
@@ -15,6 +16,9 @@ let render ~(facts : Facts.t) ~sweepable ~machines ~cap_seconds ~default_machine
     Request.default_invocations;
   add "/bench vs=trunk             # choose the baseline\n";
   add "/bench vs=5.4.1,trunk       # compare more than two runtimes\n";
+  add "/bench vs=5.5.0,5.5.0+fp    # build flavors: %s;\n"
+    (String.concat ", " (List.map (fun (n, _) -> "+" ^ n) flavors));
+  add "                            #   combine them: 5.5.0+fp+flambda\n";
   add "/bench tag=small            # a benchmark set (see below)\n";
   add "/bench tag=small,large      # several sets: their union\n";
   add "/bench invocations=5        # more repetitions\n";
