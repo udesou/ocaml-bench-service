@@ -1087,7 +1087,9 @@ let assign deps ~machine (m : Api.meta) =
            Api.id = { Api.run_id; execution };
            spec;
            caches;
-           timeout_seconds = Runspec.timeout_of_estimate ~seconds:estimate;
+           timeout_seconds =
+             Runspec.timeout_of_estimate
+               ~policy:deps.service.Service_config.timeout ~seconds:estimate ();
          })
 
 let claim deps ~machine =

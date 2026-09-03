@@ -40,6 +40,9 @@ type t = {
          both be unique or runtime names stop being injective. *)
   report : Report.thresholds;
       (* verdict bands + gates for report.md (§5.5); provisional until Q12 *)
+  timeout : Runspec.timeout_policy;
+      (* the execution timeout the assignment carries; multiplier 0 disables
+         it (slow machines where the monolith-calibrated estimate misleads) *)
 }
 
 let member k = function
@@ -162,6 +165,17 @@ let of_json j =
           cell_seconds =
             float_or Cost.default_cell_seconds (member "cell_seconds" j);
           flavors;
+          timeout =
+            (let t = member "timeout" j in
+             let d = Runspec.default_timeout in
+             {
+               Runspec.floor_seconds =
+                 (match member "floor_seconds" t with
+                 | `Int i -> i
+                 | _ -> d.Runspec.floor_seconds);
+               multiplier =
+                 float_or d.Runspec.multiplier (member "multiplier" t);
+             });
           report =
             (let r = member "report" j in
              let d = Report.default_thresholds in

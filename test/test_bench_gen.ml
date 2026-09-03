@@ -1518,6 +1518,11 @@ let test_execution () =
       check_true ~name:"a plain run reuses caches" (asg.Api.caches = `Reuse);
       check_true ~name:"the timeout has the 90-minute floor"
         (asg.Api.timeout_seconds >= 90 * 60);
+      check_true ~name:"timeout multiplier 0 disables the deadline"
+        (Runspec.timeout_of_estimate
+           ~policy:{ Runspec.floor_seconds = 10; multiplier = 0.0 }
+           ~seconds:999 ()
+        = 0);
       check_eq_opt ~name:"the assignment carries the spec verbatim"
         ~expected:(Some run_id)
         ~actual:(jstr (member "run_id" asg.Api.spec));

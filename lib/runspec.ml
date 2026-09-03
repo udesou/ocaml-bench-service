@@ -53,12 +53,25 @@ let running_ng_root_var = "${RUNNING_NG_ROOT}"
 let base_include_placeholder =
   running_ng_root_var ^ "/src/running/config/base/ocaml/macro_base.yml"
 
-let timeout_of_estimate ~seconds =
-  let floor_s = 90 * 60 in
-  max floor_s (int_of_float (float_of_int seconds *. 2.5))
+(* The execution timeout the assignment carries: a safety net against wedged
+   runs, not a scheduler.  floor covers cold compiler builds (excluded from
+   the estimate: cached and highly variable); the multiplier absorbs estimate
+   error.  Both are service.json `timeout` policy -- the estimate's
+   cell_seconds is calibrated per deployment, and a slower machine can raise
+   these or disable the net entirely (multiplier 0 -> timeout 0 -> the agent
+   enforces no deadline). *)
+type timeout_policy = { floor_seconds : int; multiplier : float }
+
+let default_timeout = { floor_seconds = 90 * 60; multiplier = 2.5 }
+
+let timeout_of_estimate ?(policy = default_timeout) ~seconds () =
+  if policy.multiplier <= 0.0 then 0
+  else
+    max policy.floor_seconds
+      (int_of_float (float_of_int seconds *. policy.multiplier))
 
 let timeout_seconds ~(cost : Cost.t) =
-  timeout_of_estimate ~seconds:(int_of_float cost.seconds)
+  timeout_of_estimate ~seconds:(int_of_float cost.seconds) ()
 
 let str s = `String s
 let opt_str = function None -> `Null | Some s -> `String s

@@ -379,7 +379,12 @@ let kill_group ~clock pid =
 (* Supervise a child: poll for exit, heartbeat every 30s in [ph] (the reply
    is the cancel channel), enforce [timeout_seconds]. *)
 let supervise ~clock (p : proto) ~ph ~timeout_seconds pid =
-  let deadline = Unix.gettimeofday () +. float_of_int timeout_seconds in
+  (* timeout 0 = the server disabled the safety net (service.json `timeout`,
+     multiplier 0): supervise heartbeats and cancellation only *)
+  let deadline =
+    if timeout_seconds <= 0 then infinity
+    else Unix.gettimeofday () +. float_of_int timeout_seconds
+  in
   let last_hb = ref 0. in
   let rec loop () =
     match Unix.waitpid [ Unix.WNOHANG ] pid with
@@ -508,8 +513,10 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
   let log_root =
     Option.value opts.log_root ~default:(Filename.concat state "logs")
   in
-  log "%s execution %d claimed (timeout %ds, caches %s)" id.Api.run_id
-    id.Api.execution a.Api.timeout_seconds
+  log "%s execution %d claimed (timeout %s, caches %s)" id.Api.run_id
+    id.Api.execution
+    (if a.Api.timeout_seconds <= 0 then "none"
+     else Printf.sprintf "%ds" a.Api.timeout_seconds)
     (match a.Api.caches with `Reuse -> "reuse" | `Bypass -> "bypass");
   match jstr (member "spec_version" spec) with
   | Some v when v <> "1" ->
@@ -644,8 +651,9 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
                   (Some
                      (Printf.sprintf
                         "running-ng runbms (cold caches build compilers \
-                         first; timeout %ds)"
-                        a.Api.timeout_seconds))
+                         first; timeout %s)"
+                        (if a.Api.timeout_seconds <= 0 then "disabled"
+                         else Printf.sprintf "%ds" a.Api.timeout_seconds)))
               with
               | `Cancel -> `Cancelled
               | `Continue ->

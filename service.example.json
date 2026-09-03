@@ -58,6 +58,18 @@
     { "name": "flambda", "configure_args": "--enable-flambda" }
   ],
 
+  "timeout": {
+    "_comment": [
+      "The execution timeout the agent enforces per run:",
+      "max(floor_seconds, multiplier * estimate). A safety net against",
+      "wedged runs, not a scheduler; the estimate is cell_seconds-based and",
+      "calibrated for the reference machine, so on slower machines raise",
+      "these, or set multiplier to 0 to disable the deadline entirely."
+    ],
+    "floor_seconds": 5400,
+    "multiplier": 2.5
+  },
+
   "report": {
     "_comment": [
       "Verdict bands and gates for report.md (lib/report.ml). Provisional",
