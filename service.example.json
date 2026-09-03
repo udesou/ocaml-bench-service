@@ -61,13 +61,13 @@
   "timeout": {
     "_comment": [
       "The execution timeout the agent enforces per run:",
-      "max(floor_seconds, multiplier * estimate). A safety net against",
-      "wedged runs, not a scheduler; the estimate is cell_seconds-based and",
-      "calibrated for the reference machine, so on slower machines raise",
-      "these, or set multiplier to 0 to disable the deadline entirely."
+      "max(floor_seconds, multiplier * estimate). multiplier 0 (the",
+      "default) disables the deadline: until a machine has an established",
+      "result set the estimate is a guess, and a wedged run is still",
+      "killable via /bench cancel. Opt in once timings are trustworthy."
     ],
     "floor_seconds": 5400,
-    "multiplier": 2.5
+    "multiplier": 0
   },
 
   "report": {

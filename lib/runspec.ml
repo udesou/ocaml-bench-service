@@ -38,12 +38,6 @@ type source = {
 
 let source ~name ~repo ~commit () = { name; repo; commit }
 
-(* NOT part of the spec: the timeout is execution-scoped (§6.2, the
-   assignment), derived at claim time.  The formula lives here so the server
-   and bench-gen's preview share one definition.  A run that has overshot its
-   estimate by this much is wedged; the floor covers cold compiler builds,
-   which the estimate deliberately excludes because they are cached and highly
-   variable. *)
 (* The config travels machine-independent (§6.1): its `includes:` line names
    the base config under this placeholder, and the AGENT substitutes its own
    running-ng checkout path when it materializes the file.  The md5 in the
@@ -54,15 +48,15 @@ let base_include_placeholder =
   running_ng_root_var ^ "/src/running/config/base/ocaml/macro_base.yml"
 
 (* The execution timeout the assignment carries: a safety net against wedged
-   runs, not a scheduler.  floor covers cold compiler builds (excluded from
-   the estimate: cached and highly variable); the multiplier absorbs estimate
-   error.  Both are service.json `timeout` policy -- the estimate's
-   cell_seconds is calibrated per deployment, and a slower machine can raise
-   these or disable the net entirely (multiplier 0 -> timeout 0 -> the agent
-   enforces no deadline). *)
+   runs, not a scheduler.  DISABLED BY DEFAULT (multiplier 0 -> timeout 0 ->
+   the agent enforces no deadline): the formula's inputs are guesses until a
+   machine has an established result set -- cell_seconds is calibrated per
+   deployment and cold compiler builds are excluded from the estimate -- and
+   a wedged run is still killable via cancel.  Opting in is service.json
+   `timeout` policy: max(floor_seconds, multiplier * estimate). *)
 type timeout_policy = { floor_seconds : int; multiplier : float }
 
-let default_timeout = { floor_seconds = 90 * 60; multiplier = 2.5 }
+let default_timeout = { floor_seconds = 90 * 60; multiplier = 0.0 }
 
 let timeout_of_estimate ?(policy = default_timeout) ~seconds () =
   if policy.multiplier <= 0.0 then 0

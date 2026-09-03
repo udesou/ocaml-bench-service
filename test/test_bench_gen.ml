@@ -727,12 +727,19 @@ let test_runspec () =
     check_true ~name:"measurement says invocations"
       (jint (member "invocations" (member "measurement" j)) = Some 1);
     (* The timeout is execution-scoped (§6.2, the assignment), not spec
-       content -- but its formula must exceed the estimate and respect the
+       content.  Disabled by default until machines have trustworthy timing
+       data; an opted-in policy must exceed the estimate and respect the
        cold-build floor, or a slot gets freed while the run was still fine. *)
-    let tmo = Runspec.timeout_seconds ~cost:spec.Gen.cost in
-    check_true ~name:"timeout exceeds the estimate"
+    check_true ~name:"the timeout is disabled by default"
+      (Runspec.timeout_seconds ~cost:spec.Gen.cost = 0);
+    let policy = { Runspec.floor_seconds = 90 * 60; multiplier = 2.5 } in
+    let tmo =
+      Runspec.timeout_of_estimate ~policy
+        ~seconds:(int_of_float spec.Gen.cost.Cost.seconds) ()
+    in
+    check_true ~name:"an opted-in timeout exceeds the estimate"
       (float_of_int tmo > spec.Gen.cost.Cost.seconds);
-    check_true ~name:"timeout respects the 90m cold-build floor"
+    check_true ~name:"an opted-in timeout respects the 90m cold-build floor"
       (tmo >= 90 * 60);
     let dumped = Yojson.Safe.to_string j in
     (* The server never connects to a bench machine (Q1): no ssh coordinates
@@ -1516,13 +1523,13 @@ let test_execution () =
       check_true ~name:"first attempt is execution 1"
         (asg.Api.id.Api.execution = 1);
       check_true ~name:"a plain run reuses caches" (asg.Api.caches = `Reuse);
-      check_true ~name:"the timeout has the 90-minute floor"
-        (asg.Api.timeout_seconds >= 90 * 60);
-      check_true ~name:"timeout multiplier 0 disables the deadline"
+      check_true ~name:"the deadline is disabled by default"
+        (asg.Api.timeout_seconds = 0);
+      check_true ~name:"an opted-in policy applies the floor and multiplier"
         (Runspec.timeout_of_estimate
-           ~policy:{ Runspec.floor_seconds = 10; multiplier = 0.0 }
-           ~seconds:999 ()
-        = 0);
+           ~policy:{ Runspec.floor_seconds = 90 * 60; multiplier = 2.5 }
+           ~seconds:60 ()
+        = 90 * 60);
       check_eq_opt ~name:"the assignment carries the spec verbatim"
         ~expected:(Some run_id)
         ~actual:(jstr (member "run_id" asg.Api.spec));

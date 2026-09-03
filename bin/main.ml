@@ -414,7 +414,9 @@ let cmd_spec o =
             @ match o.opamroot with Some r -> [ ("OPAMROOT", r) ] | None -> []);
           Printf.printf "\n# estimate: %s\n" (Cost.explain spec.cost);
           Printf.printf "# timeout:  %s\n"
-            (Cost.human (float_of_int (Runspec.timeout_seconds ~cost:spec.cost)));
+            (match Runspec.timeout_seconds ~cost:spec.cost with
+            | 0 -> "disabled (service.json `timeout` opts in)"
+            | t -> Cost.human (float_of_int t));
           Printf.printf "# config:   %s\n" config_path;
           Printf.printf "# run spec: %s\n" runspec_path;
           List.iter (fun w -> Printf.printf "# warning: %s\n" w) spec.warnings

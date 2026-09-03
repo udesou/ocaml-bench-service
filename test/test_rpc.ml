@@ -302,7 +302,7 @@ let () =
     check_true ~name:"the assignment travels the wire"
       (a.Api.id = { Api.run_id; execution = 1 }
       && a.Api.caches = `Reuse
-      && a.Api.timeout_seconds >= 90 * 60
+      && a.Api.timeout_seconds = 0 (* the deadline is disabled by default *)
       && jstr (member "run_id" a.Api.spec) = Some run_id);
     let id = a.Api.id in
     check_true ~name:"heartbeat over the wire Continues"

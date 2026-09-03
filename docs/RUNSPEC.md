@@ -115,8 +115,10 @@ Advisory strings surfaced in the acknowledgement. None blocks a run.
   group (`setsid`, so cancellation can SIGTERM the group before SIGKILL), and
   reuses switches per its provenance records.
 - **The timeout**: execution-scoped, carried by the assignment at claim
-  time. The shared formula (`max(90 min, 2.5 × estimate)`) lives in
-  `Runspec.timeout_seconds`.
+  time, and DISABLED by default (timeout 0 = the agent enforces no deadline;
+  heartbeats and cancel still supervise). Opting in is service.json
+  `timeout` policy: `max(floor_seconds, multiplier x estimate)`, in
+  `Runspec.timeout_of_estimate`.
 - **The audit trail**: who asked, from where, the verbatim command -- that is
   `request.json` in the bundle, written by the server beside the spec.
 - **Credentials and results destinations**: the agent uploads; the server
