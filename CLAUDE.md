@@ -15,10 +15,10 @@ document is required reading.
   (data contract + ingestor + dashboard). Paths to their checkouts are
   configuration (`RUNNING_NG_REPO`, `VOCAB`, the machine registry), never
   assumptions.
-- Requests, queueing and the execution PROTOCOL so far: comment → run spec →
-  queue → claimed by `bench-agent` over capnp. Nothing measures yet: the
-  agent's executor is a stage-1 stub, and nothing ever ssh's (the agent dials
-  out). `README.md` has the roadmap.
+- The loop is closed: comment → run spec → queue → claimed by `bench-agent`
+  over capnp → running-ng measures → contract → report tables on the PR →
+  per-run dashboard → public pages. Nothing ever ssh's (the agent dials
+  out). `README.md` has the status list of what is still missing.
 
 ## Hard rules (do not violate)
 
