@@ -749,6 +749,43 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
               jint (member "programs" (member "selection" spec))
               * jint (member "config_count" (member "measurement" spec))
             in
+            (* `/bench continue`: resume the previous execution's run
+               directory when this machine still has it -- running-ng redoes
+               only the cells without results (--resume), and clearing the
+               .build-failed sentinels lets failed builds retry.  Without a
+               surviving directory the run simply starts afresh. *)
+            let resume_record = Filename.concat state "resume" in
+            let resume_dir =
+              if not a.Api.resume then None
+              else
+                match
+                  String.trim
+                    (Util.read_file
+                       (Filename.concat resume_record id.Api.run_id))
+                with
+                | "" -> None
+                | d when Sys.file_exists (Filename.concat log_root d) ->
+                  Some d
+                | _ -> None
+                | exception _ -> None
+            in
+            (match (a.Api.resume, resume_dir) with
+            | true, Some d ->
+              log "%s: resuming run directory %s (failed builds retried)"
+                id.Api.run_id d;
+              ignore
+                (Sys.command
+                   (Printf.sprintf "find %s -name '*.build-failed' -delete"
+                      (Filename.quote benches_dir)))
+            | true, None ->
+              log
+                "%s: continue requested but no previous run directory here; \
+                 running afresh"
+                id.Api.run_id
+            | false, _ -> ());
+            let resume_args =
+              match resume_dir with Some d -> [ "--resume"; d ] | None -> []
+            in
             let on_tick =
               progress_tracker p ~log_root ~before ~console_path
                 ~cells_total:planned
@@ -767,7 +804,7 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
               | `Continue ->
                 run_supervised ~on_tick ~clock p ~ph:Api.Measuring
                   ~timeout_seconds:a.Api.timeout_seconds ~console_path
-                  ~overrides [ script ]
+                  ~overrides (script :: resume_args)
             in
             (* --- collect: on failure as well as success ------------------- *)
             let after =
@@ -776,6 +813,20 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
               else []
             in
             let fresh = List.filter (fun d -> not (List.mem d before)) after in
+            (* a resumed directory is not "fresh" but is the collection target *)
+            let fresh =
+              match resume_dir with
+              | Some d when not (List.mem d fresh) -> d :: fresh
+              | _ -> fresh
+            in
+            (* remember the run directory for a future `/bench continue` *)
+            (match fresh with
+            | d :: _ ->
+              mkdir_p resume_record;
+              Util.write_file
+                (Filename.concat resume_record id.Api.run_id)
+                (d ^ "\n")
+            | [] -> ());
             ignore (phase p Api.Collecting
                       (Some (match fresh with
                        | d :: _ -> "run directory " ^ d

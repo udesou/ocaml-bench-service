@@ -212,6 +212,16 @@ document is required reading.
 - **Leases, not locks.** One slot per machine: a live lease blocks further
   claims; no heartbeat for 15 min (`Server.lease_seconds`) makes the run
   claimable again as execution N+1. Events count as heartbeats.
+- **`/bench continue <id>` is a new EXECUTION, not a new run.** Owner or
+  admin; terminal runs only. It reissues the same run (same spec, same pins,
+  same bundle) with `resume.requested` in the run dir; claim consumes the
+  marker into the assignment's `resume` flag; the agent re-enters the
+  previous run directory (`running-ng --resume`, tracked in
+  `<agent-state>/resume/<run_id>`) and clears the `.build-failed` sentinels
+  so failed builds retry. No surviving directory = runs afresh, honestly
+  logged. Continue keeps the ORIGINAL pins: a fix that changes benchmark
+  source is a new benches pin and a new run. The dashboard builder rebuilds
+  a published dashboard when the bundle's manifest is newer than it.
 - **Idempotency is checked against ACTIVE runs only.** `(origin id, normalized
   command)` deduplicates redeliveries while a run is queued/running; a repeat
   of a *completed* run is the run key's job (§8.1), which nothing computes yet.

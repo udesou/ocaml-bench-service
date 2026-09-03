@@ -1737,6 +1737,50 @@ let test_execution () =
             "report.md"))
   | Error e -> fail "finish 2: %s" (markdown e));
 
+  (* /bench continue: the same run reissued with the resume directive *)
+  (match
+     Server.submit deps user
+       {
+         Api.command = "/bench continue " ^ run_id;
+         origin = { Api.kind = Api.Cli; id = "cli:cont" };
+       }
+   with
+  | Ok (Api.Answered { markdown }) ->
+    check_contains ~name:"continue answers with the resume story"
+      ~needle:"resumes it in place" markdown
+  | Ok _ -> fail "/bench continue should be Answered"
+  | Error e -> fail "continue: %s" (markdown e));
+  (match Server.claim deps ~machine:"monolith" with
+  | Ok (Some asg) ->
+    check_true ~name:"a continued run claims as the next execution"
+      (asg.Api.id = { Api.run_id; execution = 3 });
+    check_true ~name:"the assignment carries resume" (asg.Api.resume = true);
+    check_true ~name:"the resume marker is consumed by the claim"
+      (not
+         (Sys.file_exists
+            (Filename.concat
+               (Filename.concat (Filename.concat state_dir "runs") run_id)
+               "resume.requested")));
+    (match
+       Server.finish deps ~machine:"monolith" asg.Api.id
+         { Api.outcome = `Done; cells_passed = 21; cells_failed = 0;
+           detail = None }
+     with
+    | Ok () -> ()
+    | Error e -> fail "finish continued: %s" (markdown e))
+  | _ -> fail "claim after continue");
+  (match
+     Server.submit deps
+       { Api.login = "watcher"; role = Api.User }
+       {
+         Api.command = "/bench continue " ^ run_id;
+         origin = { Api.kind = Api.Cli; id = "cli:cont2" };
+       }
+   with
+  | Error e ->
+    check_true ~name:"continue is owner-or-admin" (e.Api.code = Api.Forbidden)
+  | Ok _ -> fail "a non-owner continued someone else's run");
+
   (* rerun's cache bypass travels as the assignment directive *)
   let b = submit ~origin:"cli:x2" ("/bench rerun tag=small " ^ vs) in
   (match Server.claim deps ~machine:"monolith" with

@@ -295,6 +295,8 @@ let cmd_spec o =
     | Request.Help -> cmd_help o
     | Request.Cancel id ->
       Printf.printf "action: cancel %s (no config generated)\n" id
+    | Request.Continue id ->
+      Printf.printf "action: continue %s (no config generated)\n" id
     | Request.Run | Request.Rerun -> (
       if o.variants = [] then
         die

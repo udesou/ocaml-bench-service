@@ -25,6 +25,7 @@ let render ~(facts : Facts.t) ~sweepable ~machines ~cap_seconds
   add "/bench sweep=s:262144,524288;o:80,120\n";
   add "/bench rerun                # clean slate: ignore caches and stored results\n";
   add "/bench cancel <run-id>      # stop a run (the id is in its ack comment)\n";
+  add "/bench continue <run-id>    # finish a terminal run's missing cells\n";
   add "/bench help\n";
   add "```\n\n";
 

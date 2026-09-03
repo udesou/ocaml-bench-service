@@ -56,7 +56,11 @@ while true; do
   for run in $(done_runs); do
     bundle="$STATE/runs/$run"
     [ -f "$bundle/contract/manifest.json" ] || continue   # nothing to show
-    [ -e "$OUT/$run/index.html" ] && continue             # built already
+    if [ -e "$OUT/$run/index.html" ]; then
+      # a continued run updates its contract in place: rebuild if newer
+      [ "$bundle/contract/manifest.json" -nt "$OUT/$run/index.html" ] || continue
+      rm -rf "$OUT/$run"
+    fi
     [ -e "$OUT/$run.failed" ] && continue                 # operator retries
     echo "dashboards: building $run"
     if (cd "$REPO" && BENCH_RUN_DIR="$bundle" npm run build) \

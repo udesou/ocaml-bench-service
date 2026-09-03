@@ -369,6 +369,10 @@ type assignment = {
   id : execution_id;
   spec : Yojson.Safe.t;  (** the run spec (docs/RUNSPEC.md), verbatim *)
   caches : [ `Reuse | `Bypass ];  (** Bypass when the run came from `rerun` *)
+  resume : bool;
+      (** `/bench continue`: re-enter the previous execution's run directory
+          (running-ng --resume) so completed cells are kept and failed
+          builds retried; false = a fresh run directory *)
   timeout_seconds : int;
 }
 
@@ -969,6 +973,7 @@ let json_of_assignment (a : assignment) =
       ("id", json_of_execution_id a.id);
       ("spec", a.spec);
       ("caches", str (match a.caches with `Reuse -> "reuse" | `Bypass -> "bypass"));
+      ("resume", `Bool a.resume);
       ("timeout_seconds", `Int a.timeout_seconds);
     ]
 
@@ -986,6 +991,8 @@ let assignment_of_json j =
           (match json_str (json_member "caches" j) with
           | Some "bypass" -> `Bypass
           | _ -> `Reuse);
+        resume =
+          (match json_member "resume" j with `Bool b -> b | _ -> false);
         timeout_seconds =
           (match json_member "timeout_seconds" j with
           | `Int t -> t

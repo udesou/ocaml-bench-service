@@ -510,6 +510,59 @@ let cancel_run deps (auth : Api.auth) ~run_id =
           (Api.string_of_run_state other)
     end
 
+let resume_marker deps run_id =
+  Filename.concat (run_dir deps run_id) "resume.requested"
+
+(* the shared core of requeue and continue: a terminal run back on the
+   queue, same spec and pins, the next claim starting execution N+1 *)
+let reissue deps (m : Api.meta) ~run_id ~stamp_as =
+  match m.Api.state with
+  | Api.Queued | Api.Running | Api.Publishing ->
+    err Api.Bad_command
+      "Run `%s` is %s -- only finished runs can be %s (cancel it first if it \
+       is stuck)."
+      run_id
+      (Api.string_of_run_state m.Api.state)
+      stamp_as
+  | Api.Done | Api.Failed | Api.Timed_out | Api.Cancelled ->
+    save_meta deps
+      {
+        m with
+        state = Api.Queued;
+        finished_at = None;
+        duration_seconds = None;
+        cells_passed = 0;
+        cells_failed = 0;
+        summary = None;
+      };
+    (* a fresh cycle gets a fresh completion notice (and post) *)
+    List.iter
+      (fun f ->
+        try Sys.remove (Filename.concat (run_dir deps run_id) f)
+        with Sys_error _ -> ())
+      [ "completion.md"; "completion.posted" ];
+    stamp deps run_id stamp_as;
+    Ok ()
+
+(* `/bench continue <id>`: finish a terminal run's missing cells.  A new
+   execution of the SAME run (same spec, same pins, same bundle); the
+   assignment carries resume=true, the agent re-invokes running-ng with
+   --resume into the surviving run directory, and running-ng redoes only the
+   cells without results (failed builds retried: the agent clears the
+   .build-failed sentinels).  Owner or admin, like cancel. *)
+let continue_run deps (auth : Api.auth) ~run_id =
+  match meta_of deps run_id with
+  | None -> err Api.Not_found "No run `%s` is known to this server." run_id
+  | Some m ->
+    if auth.Api.role <> Api.Admin && m.requested_by <> auth.Api.login then
+      err Api.Forbidden
+        "Run `%s` belongs to @%s; only its owner or an admin may continue it."
+        run_id m.requested_by
+    else
+      let* () = reissue deps m ~run_id ~stamp_as:"continued" in
+      Util.write_file (resume_marker deps run_id) "";
+      Ok ()
+
 let submit deps (auth0 : Api.auth) (s : Api.submit) =
   let* auth = effective_auth deps auth0 in
   let* request =
@@ -522,6 +575,18 @@ let submit deps (auth0 : Api.auth) (s : Api.submit) =
      requester posts the markdown verbatim -- it cannot pre-parse and route
      these itself, because the grammar lives here (Q13). *)
   | Request.Help -> Ok (Api.Answered { markdown = render_help deps })
+  | Request.Continue id ->
+    let* () = continue_run deps auth ~run_id:id in
+    Ok
+      (Api.Answered
+         {
+           markdown =
+             Printf.sprintf
+               "Continuing `%s`: a new execution resumes it in place -- \
+                completed cells are kept, missing ones (and failed builds) \
+                are redone."
+               id;
+         })
   | Request.Cancel id ->
     let* how = cancel_run deps auth ~run_id:id in
     Ok
@@ -882,33 +947,10 @@ let requeue deps (auth0 : Api.auth) ~run_id =
   let* () = require_admin auth in
   match meta_of deps run_id with
   | None -> err Api.Not_found "No run `%s` is known to this server." run_id
-  | Some m -> (
-    match m.state with
-    | Api.Queued | Api.Running | Api.Publishing ->
-      err Api.Bad_command
-        "Run `%s` is %s -- only finished runs can be requeued (cancel it \
-         first if it is stuck)."
-        run_id
-        (Api.string_of_run_state m.state)
-    | Api.Done | Api.Failed | Api.Timed_out | Api.Cancelled ->
-      save_meta deps
-        {
-          m with
-          state = Api.Queued;
-          finished_at = None;
-          duration_seconds = None;
-          cells_passed = 0;
-          cells_failed = 0;
-          summary = None;
-        };
-      (* a fresh cycle gets a fresh completion notice (and post) *)
-      List.iter
-        (fun f ->
-          try Sys.remove (Filename.concat (run_dir deps run_id) f)
-          with Sys_error _ -> ())
-        [ "completion.md"; "completion.posted" ];
-      stamp deps run_id "requeued";
-      Ok ())
+  | Some m ->
+    (* a plain requeue re-measures from scratch: no resume marker *)
+    (try Sys.remove (resume_marker deps run_id) with Sys_error _ -> ());
+    reissue deps m ~run_id ~stamp_as:"requeued"
 
 let machines_dir deps = Filename.concat deps.state_dir "machines"
 
@@ -1059,6 +1101,10 @@ let assign deps ~machine (m : Api.meta) =
     let execution =
       match read_exec deps run_id with Some e -> e.execution + 1 | None -> 1
     in
+    (* `/bench continue` left the marker: this execution resumes in place *)
+    let resume = Sys.file_exists (resume_marker deps run_id) in
+    if resume then (
+      try Sys.remove (resume_marker deps run_id) with Sys_error _ -> ());
     let now_epoch = Unix.gettimeofday () in
     let now = iso_of_epoch now_epoch in
     write_exec deps run_id
@@ -1087,6 +1133,7 @@ let assign deps ~machine (m : Api.meta) =
            Api.id = { Api.run_id; execution };
            spec;
            caches;
+           resume;
            timeout_seconds =
              Runspec.timeout_of_estimate
                ~policy:deps.service.Service_config.timeout ~seconds:estimate ();
@@ -1202,6 +1249,7 @@ let server_owned =
   [
     "meta.json"; "request.json"; "runspec.json"; "config.yml";
     "execution.json"; "events.ndjson"; "completion.md"; "completion.posted";
+    "resume.requested";
     "report.md" (* rendered by the server at finish, not uploaded *);
   ]
 

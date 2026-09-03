@@ -58,6 +58,8 @@ Every run also gets:
 /bench force=true           # run despite the cost limit (admin-only)
 /bench priority=top         # jump the queue (admin-only)
 /bench cancel <run-id>      # the id is in the run's acknowledgement
+/bench continue <run-id>    # finish a terminal run's missing cells: keeps
+                            #   completed results, retries failed builds
 /bench rerun                # clean slate: rebuild everything
 /bench help                 # help about the commands.
 ```

@@ -22,6 +22,9 @@
 type action =
   | Run
   | Cancel of string  (* the run id to cancel, from the acknowledgement *)
+  | Continue of string
+      (* finish a terminal run's missing cells: a new execution of the SAME
+         run, resumed in place (running-ng --resume; failed builds retried) *)
   | Rerun
   | Help
 
@@ -144,6 +147,15 @@ let parse comment =
                 "`cancel` needs the id of the run to cancel -- it is in the \
                  run's acknowledgement comment. For example `/bench cancel \
                  run-42`.")
+          | "continue" -> (
+            match rest with
+            | id :: rest' when Util.split_kv id = None ->
+              go { req with action = Continue id } rest'
+            | _ ->
+              err
+                "`continue` needs the id of the run to continue -- it is in \
+                 the run's acknowledgement comment. For example `/bench \
+                 continue run-42`.")
           | "rerun" -> go { req with action = Rerun } rest
           | "help" -> go { req with action = Help } rest
           | other ->
@@ -267,6 +279,7 @@ let to_json t =
     match t.action with
     | Run -> "run"
     | Cancel _ -> "cancel"
+    | Continue _ -> "continue"
     | Rerun -> "rerun"
     | Help -> "help"
   in
@@ -274,7 +287,9 @@ let to_json t =
     [
       ("action", s action);
       ( "cancel_run_id",
-        match t.action with Cancel id -> s id | _ -> `Null );
+        match t.action with
+        | Cancel id | Continue id -> s id
+        | _ -> `Null );
       ("machine", match t.machine with None -> `Null | Some m -> s m);
       ("invocations", `Int (invocations_or_default t));
       ("invocations_explicit", `Bool (t.invocations <> None));
