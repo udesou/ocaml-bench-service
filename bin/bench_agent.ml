@@ -527,7 +527,8 @@ let has_sub ~needle hay =
    from NEW console output (running-ng's own warning lines); that is log
    parsing, accepted as provisional and capped so a pathological run cannot
    flood the event stream. *)
-let progress_tracker (p : proto) ~log_root ~before ~console_path ~cells_total =
+let progress_tracker (p : proto) ~log_root ~before ~resume_dir
+    ~console_path ~cells_total =
   let last = ref ("", -1) in
   let console_off = ref 0 in
   let warnings = ref 0 in
@@ -536,7 +537,9 @@ let progress_tracker (p : proto) ~log_root ~before ~console_path ~cells_total =
        (if Sys.file_exists log_root then
           Sys.readdir log_root |> Array.to_list
           |> List.filter (fun d ->
-                 (not (List.mem d before))
+                 (* a resumed run REUSES its old directory, which the
+                    before-snapshot would otherwise hide *)
+                 (Some d = resume_dir || not (List.mem d before))
                  && Sys.is_directory (Filename.concat log_root d))
         else [])
      with
@@ -787,7 +790,7 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
               match resume_dir with Some d -> [ "--resume"; d ] | None -> []
             in
             let on_tick =
-              progress_tracker p ~log_root ~before ~console_path
+              progress_tracker p ~log_root ~before ~resume_dir ~console_path
                 ~cells_total:planned
             in
             let outcome =
