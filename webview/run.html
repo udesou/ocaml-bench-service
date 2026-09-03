@@ -98,6 +98,7 @@
     <h1><span id="runid">…</span> <span class="chip" id="state"></span>
         <a href="./#top">← all runs</a></h1>
     <p class="sub"><code id="command"></code></p>
+    <p class="sub" id="now" hidden></p>
   </header>
 
   <div class="error" id="err" hidden></div>
@@ -248,21 +249,36 @@ async function renderMeasurements() {
   } else $("mnote").textContent = "none yet";
 }
 
-function renderEvents(nd) {
+function renderEvents(nd, state) {
   if (!nd || !nd.trim()) return;
   const out = [];
+  let progress = null;
+  let warnings = 0;
   for (const line of nd.split("\n")) {
     if (!line.trim()) continue;
     let e; try { e = JSON.parse(line); } catch { continue; }
     const b = e.body || {};
+    if (b.type === "benchmark_progress") progress = b;
+    if (b.type === "warning") warnings++;
     const what = b.type === "phase"
       ? `${b.phase}${b.detail ? ` — ${b.detail}` : ""}`
       : b.type === "execution_finished"
         ? `finished: ${b.result} (${b.cells_passed} passed, ${b.cells_failed} failed)`
+      : b.type === "benchmark_progress"
+        ? `measuring ${b.benchmark} (${b.cells_done}/${b.cells_total} benchmark cells done)`
+      : b.type === "warning"
+        ? `⚠ ${b.detail}`
         : JSON.stringify(b);
     out.push(`<div><span class="ts">${esc(e.ts)}</span> e${esc(e.execution)} ${esc(what)}</div>`);
   }
   if (out.length) $("events").innerHTML = out.join("");
+  // the live line under the header: what running-ng is doing right now
+  if (state === "running" && progress) {
+    $("now").textContent =
+      `measuring ${progress.benchmark} · ${progress.cells_done}/${progress.cells_total} benchmark cells`
+      + (warnings ? ` · ⚠ ${warnings} warning${warnings === 1 ? "" : "s"}` : "");
+    $("now").hidden = false;
+  } else $("now").hidden = true;
 }
 
 let timer = null;
@@ -286,7 +302,7 @@ async function refresh() {
     + (meta.candidates || []).map((c) => pinRow("candidate", c)).join("");
   await renderResults(meta);
   await renderMeasurements();
-  renderEvents(await getText(`${bundle}/events.ndjson`));
+  renderEvents(await getText(`${bundle}/events.ndjson`), meta.state);
   const active = meta.state === "queued" || meta.state === "running"
     || meta.state === "publishing"
     || (meta.state === "done" && !(await exists(`dashboards/${runId}/index.html`)));

@@ -378,7 +378,11 @@ let kill_group ~clock pid =
 
 (* Supervise a child: poll for exit, heartbeat every 30s in [ph] (the reply
    is the cancel channel), enforce [timeout_seconds]. *)
-let supervise ~clock (p : proto) ~ph ~timeout_seconds pid =
+let supervise ?(on_tick = fun () -> ()) ~clock (p : proto) ~ph
+    ~timeout_seconds pid =
+  (* progress scans are cheap and post only on change: tick more often than
+     the heartbeat so short runs are visible too *)
+  let last_tick = ref 0. in
   (* timeout 0 = the server disabled the safety net (service.json `timeout`,
      multiplier 0): supervise heartbeats and cancellation only *)
   let deadline =
@@ -399,6 +403,8 @@ let supervise ~clock (p : proto) ~ph ~timeout_seconds pid =
       end
       else if now -. !last_hb >= 30. then begin
         last_hb := now;
+        last_tick := now;
+        on_tick ();
         match p.heartbeat ph with
         | `Continue -> loop ()
         | `Cancel ->
@@ -407,16 +413,22 @@ let supervise ~clock (p : proto) ~ph ~timeout_seconds pid =
           `Cancelled
       end
       else begin
+        if now -. !last_tick >= 10. then begin
+          last_tick := now;
+          on_tick ()
+        end;
         Eio.Time.sleep clock 2.0;
         loop ()
       end
-    | _, status -> `Exited status
+    | _, status ->
+      on_tick () (* the final state: the last cells always get reported *);
+      `Exited status
   in
   loop ()
 
 (* Run one command line under setsid, console to a file, supervised. *)
-let run_supervised ~clock (p : proto) ~ph ~timeout_seconds ~console_path
-    ~overrides argv =
+let run_supervised ?on_tick ~clock (p : proto) ~ph ~timeout_seconds
+    ~console_path ~overrides argv =
   let console =
     Unix.openfile console_path [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ]
       0o644
@@ -429,7 +441,7 @@ let run_supervised ~clock (p : proto) ~ph ~timeout_seconds ~console_path
         (child_env overrides) devnull console console
     with
     | exception e -> `Spawn_failed (Printexc.to_string e)
-    | pid -> supervise ~clock p ~ph ~timeout_seconds pid
+    | pid -> supervise ?on_tick ~clock p ~ph ~timeout_seconds pid
   in
   Unix.close console;
   Unix.close devnull;
@@ -499,6 +511,94 @@ let ensure_benches_setup ~clock (p : proto) ~state ~dir ~commit ~workdir =
       | `Cancelled -> `Cancelled
     end
   end
+
+let has_sub ~needle hay =
+  let nl = String.length needle and hl = String.length hay in
+  let rec go i =
+    i + nl <= hl && (String.sub hay i nl = needle || go (i + 1))
+  in
+  nl > 0 && go 0
+
+(* PROVISIONAL per-benchmark progress, until the running-ng progress plugin
+   lands (the honest producer): running-ng drops files as it works -- one
+   per-cell log per (benchmark, config), tool sidecars on completion -- so
+   watching the run directory on the heartbeat tick yields "what runs now"
+   and a completed count without touching running-ng.  Failures are grepped
+   from NEW console output (running-ng's own warning lines); that is log
+   parsing, accepted as provisional and capped so a pathological run cannot
+   flood the event stream. *)
+let progress_tracker (p : proto) ~log_root ~before ~console_path ~cells_total =
+  let last = ref ("", -1) in
+  let console_off = ref 0 in
+  let warnings = ref 0 in
+  fun () ->
+    (match
+       (if Sys.file_exists log_root then
+          Sys.readdir log_root |> Array.to_list
+          |> List.filter (fun d ->
+                 (not (List.mem d before))
+                 && Sys.is_directory (Filename.concat log_root d))
+        else [])
+     with
+    | [] -> ()
+    | d :: _ -> (
+      let dir = Filename.concat log_root d in
+      let files = try Sys.readdir dir with Sys_error _ -> [||] in
+      let cells_done = ref 0 in
+      let newest = ref ("", 0.) in
+      Array.iter
+        (fun f ->
+          if starts_with ~prefix:"olly_" f && Filename.check_suffix f ".json"
+          then incr cells_done;
+          if Filename.check_suffix f ".log" then
+            match (Unix.stat (Filename.concat dir f)).Unix.st_mtime with
+            | m when m > snd !newest -> newest := (f, m)
+            | _ -> ()
+            | exception Unix.Unix_error _ -> ())
+        files;
+      let bench =
+        match String.index_opt (fst !newest) '.' with
+        | Some i -> String.sub (fst !newest) 0 i
+        | None -> ""
+      in
+      if bench <> "" && (bench, !cells_done) <> !last then begin
+        last := (bench, !cells_done);
+        p.post
+          [
+            `Assoc
+              [
+                ("type", `String "benchmark_progress");
+                ("benchmark", `String bench);
+                ("cells_done", `Int !cells_done);
+                ("cells_total", `Int cells_total);
+              ];
+          ]
+      end));
+    try
+      let size = (Unix.stat console_path).Unix.st_size in
+      if size > !console_off && !warnings < 30 then begin
+        let ic = open_in_bin console_path in
+        seek_in ic !console_off;
+        let chunk = really_input_string ic (size - !console_off) in
+        close_in ic;
+        console_off := size;
+        List.iter
+          (fun line ->
+            if !warnings < 30 && has_sub ~needle:"failed" line then begin
+              incr warnings;
+              let line =
+                let t = String.trim line in
+                if String.length t > 200 then String.sub t 0 200 else t
+              in
+              p.post
+                [
+                  `Assoc
+                    [ ("type", `String "warning"); ("detail", `String line) ];
+                ]
+            end)
+          (String.split_on_char '\n' chunk)
+      end
+    with Unix.Unix_error _ | Sys_error _ -> ()
 
 let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
   let p = proto cap a.Api.id in
@@ -645,6 +745,14 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
                 Array.to_list (Sys.readdir log_root)
               else []
             in
+            let planned =
+              jint (member "programs" (member "selection" spec))
+              * jint (member "config_count" (member "measurement" spec))
+            in
+            let on_tick =
+              progress_tracker p ~log_root ~before ~console_path
+                ~cells_total:planned
+            in
             let outcome =
               match
                 phase p Api.Measuring
@@ -657,7 +765,7 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
               with
               | `Cancel -> `Cancelled
               | `Continue ->
-                run_supervised ~clock p ~ph:Api.Measuring
+                run_supervised ~on_tick ~clock p ~ph:Api.Measuring
                   ~timeout_seconds:a.Api.timeout_seconds ~console_path
                   ~overrides [ script ]
             in
@@ -714,10 +822,6 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
             log "%s: uploaded %d artifacts + console.log" id.Api.run_id
               !uploaded;
             (* --- finish ---------------------------------------------------- *)
-            let planned =
-              jint (member "programs" (member "selection" spec))
-              * jint (member "config_count" (member "measurement" spec))
-            in
             match outcome with
             | `Exited (Unix.WEXITED 0) ->
               (* exit 0 is not success: running-ng skips failed benchmark
