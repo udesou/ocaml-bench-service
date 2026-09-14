@@ -40,6 +40,7 @@ type opts = {
   cap : string option;
   state_dir : string;  (* clones + work areas + LOG_DIR live here *)
   log_root : string option;  (* override LOG_DIR (default <state>/logs) *)
+  opam_root : string option;  (* override OPAMROOT (default <state>/opam) *)
   interval : float;  (* seconds between empty claims *)
   once : bool;  (* execute one assignment, then exit (smoke tests) *)
   stub : bool;  (* protocol-only executor: no benchmark runs *)
@@ -51,6 +52,7 @@ let default_opts () =
     cap = Sys.getenv_opt "BENCH_AGENT_CAP";
     state_dir = Filename.concat home ".bench-agent";
     log_root = None;
+    opam_root = None;
     interval = 5.0;
     once = false;
     stub = false;
@@ -73,6 +75,9 @@ Options:
   --cap FILE        the agent capability (or $BENCH_AGENT_CAP);
                     written by bench-serve as <state>/caps/agent-<machine>.cap
   --state-dir DIR   clones, work areas and logs (default ~/.bench-agent)
+  --opam-root DIR   opam root for runs (default <state>/opam; sharing the
+                    user's root lets local work and the agent corrupt each
+                    other's switches)
   --log-dir DIR     running-ng LOG_DIR (default <state-dir>/logs)
   --interval SEC    poll interval while the queue is empty (default 5)
   --once            process one assignment, then exit
@@ -95,6 +100,7 @@ let parse_args argv =
       | "--cap" -> set (fun v -> { !o with cap = Some v })
       | "--state-dir" -> set (fun v -> { !o with state_dir = v })
       | "--log-dir" -> set (fun v -> { !o with log_root = Some v })
+      | "--opam-root" -> set (fun v -> { !o with opam_root = Some v })
       | "--interval" -> set (fun v -> { !o with interval = float_of_string v })
       | "--once" -> o := { !o with once = true }; go rest
       | "--stub" -> o := { !o with stub = true }; go rest
@@ -616,6 +622,19 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
   let log_root =
     Option.value opts.log_root ~default:(Filename.concat state "logs")
   in
+  (* The agent's own opam root, like its own clones and logs. Sharing the
+     user's root means sharing every running-ng-* switch, the opam-compiler
+     plugin symlink and the opam lock, so local work and the agent can damage
+     each other's switches: obelisk ran for months with opam-compiler evicted
+     from its tools switch by a local sweep, and reported ok throughout.
+     running-ng derives its switch-state file from OPAMROOT, so isolating the
+     root isolates that record too.
+
+     Sharing is still available with --opam-root, for a machine where the cost
+     of rebuilding every runtime switch outweighs the isolation. *)
+  let opam_root =
+    Option.value opts.opam_root ~default:(Filename.concat state "opam")
+  in
   log "%s execution %d claimed (timeout %s, caches %s)" id.Api.run_id
     id.Api.execution
     (if a.Api.timeout_seconds <= 0 then "none"
@@ -737,6 +756,7 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
                 ("RUNNING_MACRO_BENCH_DIR", benches_dir);
                 ("RUNNING_BENCH_DIR", benches_dir);
                 ("OLLY_DIR", dir_of "olly");
+                ("OPAMROOT", opam_root);
                 ("RUNNING_REUSE_SWITCHES", "1");
               ]
               @ (if tags = [] then [] else
