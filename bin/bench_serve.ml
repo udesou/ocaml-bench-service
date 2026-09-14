@@ -27,22 +27,25 @@ type opts = {
   secret_key : string option;
   resolver : string;
   base_url : string;
-  base_config : string;
-  vocab_file : string;
-  running_ng_src : string;
-  running_ng_dir : string;
+  (* Every path the server reads code or metadata from is an OPTION whose
+     default hangs off --state-dir (below).  The server owns its clones: a
+     host that also carries a developer checkout, or a bench agent, must not
+     share git objects, refs or build products with the service. *)
+  base_config : string option;
+      (* given: use flag paths verbatim instead of extracting from the
+         running-ng pin (hermetic runs, the live check) *)
+  vocab_file : string option;
+  running_ng_src : string option;
+  running_ng_dir : string option;
   running_ng_ref : string;
-  macro_benches_dir : string;
+  macro_benches_dir : string option;
   macro_benches_ref : string;
-  olly_dir : string;
+  olly_dir : string option;
   olly_ref : string;
-  dashboard_dir : string;
+  dashboard_dir : string option;
   dashboard_ref : string;
   helper : string;
   max_active_per_user : int;
-  explicit_base : bool;
-      (* --base-config given: use flag paths verbatim instead of extracting
-         from the running-ng pin (hermetic runs, the live check) *)
 }
 
 let default_opts () =
@@ -55,22 +58,39 @@ let default_opts () =
     secret_key = None;
     resolver = "github";
     base_url = "http://localhost";
-    base_config =
-      Filename.concat home "running-ng/src/running/config/base/ocaml/macro_base.yml";
-    vocab_file = Filename.concat home "ocaml-bench-dashboard/schema/json/vocab.json";
-    running_ng_src = Filename.concat home "running-ng/src";
-    running_ng_dir = Filename.concat home "running-ng";
+    base_config = None;
+    vocab_file = None;
+    running_ng_src = None;
+    running_ng_dir = None;
     running_ng_ref = "origin/adding-ocaml-support";
-    macro_benches_dir = Filename.concat home "macro-benches";
+    macro_benches_dir = None;
     macro_benches_ref = "origin/master";
-    olly_dir = Filename.concat home "runtime_events_tools";
+    olly_dir = None;
     olly_ref = "origin/main";
-    dashboard_dir = Filename.concat home "ocaml-bench-dashboard";
+    dashboard_dir = None;
     dashboard_ref = "origin/main";
     helper = Filename.concat (Sys.getcwd ()) "scripts/rng_helper.py";
     max_active_per_user = 2;
-    explicit_base = false;
   }
+
+(* The server's own clones live under <state>/git/<name>.  Filename.concat
+   rather than "/" so this stays right wherever the service is built. *)
+let repo_dir o name = Filename.concat (Filename.concat o.state_dir "git") name
+
+let running_ng_dir o =
+  Option.value o.running_ng_dir ~default:(repo_dir o "running-ng")
+
+let macro_benches_dir o =
+  Option.value o.macro_benches_dir ~default:(repo_dir o "macro-benches")
+
+let olly_dir o = Option.value o.olly_dir ~default:(repo_dir o "runtime_events_tools")
+
+let dashboard_dir o =
+  Option.value o.dashboard_dir ~default:(repo_dir o "ocaml-bench-dashboard")
+
+let vocab_file o =
+  Option.value o.vocab_file
+    ~default:(Filename.concat (dashboard_dir o) "schema/json/vocab.json")
 
 let die fmt = Printf.ksprintf (fun s -> prerr_endline s; exit 2) fmt
 
@@ -96,8 +116,21 @@ Options:
                           how vs=/PR refs become shas (default github;
                           offline accepts only versions and commit shas)
   --base-url URL          links in acknowledgements
-  --base-config --vocab --running-ng-src --running-ng-dir --running-ng-ref
-  --macro-benches-dir --macro-benches-ref --helper --max-active-per-user
+  --running-ng-dir DIR    the server's own clone of running-ng, whose pin the
+                          base config and python are extracted from
+                          (default <state-dir>/git/running-ng); likewise
+  --macro-benches-dir --olly-dir --dashboard-dir, each defaulting to
+                          <state-dir>/git/<repo>.  These are the SERVER's
+                          clones: point them at a developer checkout only
+                          deliberately, and never on a host that also runs a
+                          bench agent.  scripts/server-setup.sh creates them.
+  --vocab FILE            (default <dashboard-dir>/schema/json/vocab.json)
+  --base-config FILE      skip the pin extraction and read this config
+                          verbatim (hermetic runs, the live check)
+  --running-ng-src DIR    python for --base-config (default <running-ng-dir>/src)
+  --running-ng-ref --macro-benches-ref --olly-ref --dashboard-ref
+                          the tracked refs pins are SEEDED from on first start
+  --helper --max-active-per-user
 |};
   exit 0
 
@@ -119,17 +152,16 @@ let parse_args argv =
       | "--secret-key" -> set (fun v -> { !o with secret_key = Some v })
       | "--resolver" -> set (fun v -> { !o with resolver = v })
       | "--base-url" -> set (fun v -> { !o with base_url = v })
-      | "--base-config" ->
-        set (fun v -> { !o with base_config = v; explicit_base = true })
-      | "--vocab" -> set (fun v -> { !o with vocab_file = v })
-      | "--running-ng-src" -> set (fun v -> { !o with running_ng_src = v })
-      | "--running-ng-dir" -> set (fun v -> { !o with running_ng_dir = v })
+      | "--base-config" -> set (fun v -> { !o with base_config = Some v })
+      | "--vocab" -> set (fun v -> { !o with vocab_file = Some v })
+      | "--running-ng-src" -> set (fun v -> { !o with running_ng_src = Some v })
+      | "--running-ng-dir" -> set (fun v -> { !o with running_ng_dir = Some v })
       | "--running-ng-ref" -> set (fun v -> { !o with running_ng_ref = v })
-      | "--macro-benches-dir" -> set (fun v -> { !o with macro_benches_dir = v })
+      | "--macro-benches-dir" -> set (fun v -> { !o with macro_benches_dir = Some v })
       | "--macro-benches-ref" -> set (fun v -> { !o with macro_benches_ref = v })
-      | "--olly-dir" -> set (fun v -> { !o with olly_dir = v })
+      | "--olly-dir" -> set (fun v -> { !o with olly_dir = Some v })
       | "--olly-ref" -> set (fun v -> { !o with olly_ref = v })
-      | "--dashboard-dir" -> set (fun v -> { !o with dashboard_dir = v })
+      | "--dashboard-dir" -> set (fun v -> { !o with dashboard_dir = Some v })
       | "--dashboard-ref" -> set (fun v -> { !o with dashboard_ref = v })
       | "--helper" -> set (fun v -> { !o with helper = v })
       | "--max-active-per-user" ->
@@ -169,10 +201,10 @@ let deps o ~on_bump =
      where the agent checks sources out (§6.1: the agent owns its paths). *)
   let pin_config =
     [
-      (Api.Running_ng, o.running_ng_dir, o.running_ng_ref);
-      (Api.Macro_benches, o.macro_benches_dir, o.macro_benches_ref);
-      (Api.Olly, o.olly_dir, o.olly_ref);
-      (Api.Dashboard, o.dashboard_dir, o.dashboard_ref);
+      (Api.Running_ng, running_ng_dir o, o.running_ng_ref);
+      (Api.Macro_benches, macro_benches_dir o, o.macro_benches_ref);
+      (Api.Olly, olly_dir o, o.olly_ref);
+      (Api.Dashboard, dashboard_dir o, o.dashboard_ref);
     ]
   in
   let pins = Server.init_pins ~state_dir:o.state_dir ~pin_config in
@@ -182,18 +214,23 @@ let deps o ~on_bump =
   (* base config + running-ng python follow the PIN, not the working copy;
      --base-config overrides for hermetic runs (the live check). *)
   let base_config, running_ng_src =
-    if o.explicit_base then (o.base_config, o.running_ng_src)
-    else
+    match o.base_config with
+    | Some bc ->
+      ( bc,
+        Option.value o.running_ng_src
+          ~default:(Filename.concat (running_ng_dir o) "src") )
+    | None -> (
       match find_pin Api.Running_ng with
       | None ->
         die
-          "no running-ng pin (is %s a checkout?) and no --base-config override"
-          o.running_ng_dir
+          "no running-ng pin (is %s a checkout?  scripts/server-setup.sh \
+           creates the server's own clones) and no --base-config override"
+          (running_ng_dir o)
       | Some p -> (
         let dst = Filename.concat o.state_dir "running-ng-src" in
-        match extract_tree ~dir:o.running_ng_dir ~commit:p.Api.commit ~dst with
+        match extract_tree ~dir:(running_ng_dir o) ~commit:p.Api.commit ~dst with
         | Error m -> die "%s" m
-        | Ok () -> (base_in_tree dst, Filename.concat dst "src"))
+        | Ok () -> (base_in_tree dst, Filename.concat dst "src")))
   in
   let bridge =
     Bridge.default_config ~helper:o.helper ~running_ng_src ()
@@ -204,9 +241,9 @@ let deps o ~on_bump =
     | Error e -> die "could not read base config facts: %s" e
   in
   let sweepable =
-    match Vocab.of_file o.vocab_file with
+    match Vocab.of_file (vocab_file o) with
     | Ok d -> d
-    | Error e -> die "could not read %s: %s" o.vocab_file e
+    | Error e -> die "could not read %s: %s" (vocab_file o) e
   in
   let resolver =
     match o.resolver with
@@ -274,7 +311,7 @@ let deps o ~on_bump =
           (* dry-run the candidate: extract it and load facts through its own
              python -- the drift class of failure surfaces HERE, not later *)
           let dst = Filename.concat o.state_dir "pin-check" in
-          match extract_tree ~dir:o.running_ng_dir ~commit ~dst with
+          match extract_tree ~dir:(running_ng_dir o) ~commit ~dst with
           | Error m -> Error m
           | Ok () -> (
             let b =
