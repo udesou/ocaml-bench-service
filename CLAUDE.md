@@ -319,7 +319,28 @@ document is required reading.
   -- check file content, not ancestry.
 - **`make switch` builds a compiler and takes opam's root lock.** Never run it
   while a benchmark is running; `make check-idle` is the guard (and uses
-  `[p]ython3` so pgrep does not match its own shell).
+  `[p]ython3` so pgrep does not match its own shell). On a host that is ALSO a
+  bench machine, set `BENCH_OPAMROOT` (server.env) and the service gets its own
+  root, so the lock cannot collide at all. Opt-in, not the default: a private
+  root rebuilds a compiler, and the service touches opam only at setup time.
+- **The server owns its checkouts (`<state>/git/<repo>`), and only those.**
+  `--running-ng-dir` / `--macro-benches-dir` / `--olly-dir` / `--dashboard-dir`
+  and `--vocab` all default off `--state-dir`; nothing defaults to `$HOME/<repo>`
+  any more. The service reads and writes `<state>/` and this repo's `./_opam`,
+  and nothing else. Three things made the old defaults wrong on a host where
+  somebody also develops these repos (or runs the agent): `dashboard_builder.sh`
+  ran `npm run build` INSIDE the checkout, writing `dist/` there on every
+  finished run; `server-setup.sh` fetched into it; and the pins were seeded from
+  its remote-tracking refs, so the server's "latest" was whenever a person last
+  fetched, and a `git gc`/history rewrite there could drop a commit a pin names.
+  `server-setup.sh` can still SEED a first clone from `$HOME/<repo>` as a donor
+  (it then repoints origin upstream and fetches for itself, no `--reference`, no
+  alternates) so a fresh server does not pay a cold pull. Pointing a flag at a
+  working checkout remains possible; it is now a deliberate act.
+- **The agent never touches your working trees either.** `ensure_checkout` is
+  only ever called with `dir_of name = <agent-state>/git/<name>`. The only
+  `local_source` caller (read-only: `rev-parse` + `remote get-url`) is
+  `bin/main.ml`, the dev tool.
 
 ## Per-session workflow
 

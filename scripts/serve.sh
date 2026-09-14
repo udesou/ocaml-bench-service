@@ -23,12 +23,18 @@ ENV_FILE="${1:-$ROOT/server.env}"
 : "${BENCH_SERVICE_CONFIG:=$ROOT/service.json}"
 : "${BENCH_RESOLVER:=github}"                        # offline for hermetic use
 : "${BENCH_BASE_URL:=http://localhost}"              # links in acknowledgements
-: "${RUNNING_NG_REPO:=$HOME/running-ng}"
+# The server's OWN clones, under its state dir (scripts/server-setup.sh
+# creates them).  Not $HOME/<repo>: that is where a person develops these
+# repos, and on a host with a double role it is also where the bench agent
+# would look.  Pointing these at a working checkout is an explicit choice --
+# the server fetches into them and extracts trees out of them.
+: "${BENCH_GIT_DIR:=$BENCH_STATE_DIR/git}"
+: "${RUNNING_NG_REPO:=$BENCH_GIT_DIR/running-ng}"
 : "${RUNNING_NG_REF:=origin/adding-ocaml-support}"
-: "${MACRO_BENCHES_REPO:=$HOME/macro-benches}"
-: "${OLLY_REPO:=$HOME/runtime_events_tools}"
-: "${DASHBOARD_REPO:=$HOME/ocaml-bench-dashboard}"
-: "${VOCAB:=$HOME/ocaml-bench-dashboard/schema/json/vocab.json}"
+: "${MACRO_BENCHES_REPO:=$BENCH_GIT_DIR/macro-benches}"
+: "${OLLY_REPO:=$BENCH_GIT_DIR/runtime_events_tools}"
+: "${DASHBOARD_REPO:=$BENCH_GIT_DIR/ocaml-bench-dashboard}"
+: "${VOCAB:=$DASHBOARD_REPO/schema/json/vocab.json}"
 
 [ -f "$BENCH_SERVICE_CONFIG" ] \
   || { echo "no $BENCH_SERVICE_CONFIG -- cp service.example.json service.json and edit"; exit 1; }

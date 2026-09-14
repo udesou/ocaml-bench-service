@@ -14,25 +14,30 @@
 # retried until that file is removed -- a broken run must not wedge the
 # builder in a loop.
 #
-# v0.1 builds from the WORKING dashboard checkout; the dashboard PIN (bump)
-# deciding when existing dashboards are rebuilt is future work, so the pin
-# commit is recorded next to each build for that day.
+# It builds in the SERVER'S OWN dashboard checkout (<state>/git/...), which
+# scripts/server-setup.sh creates and prepares.  `npm run build` writes dist/
+# in whatever checkout it is pointed at, so aiming this at a developer's
+# working copy would have the service clobbering (and be clobbered by) their
+# builds.  The dashboard PIN (bump) deciding when existing dashboards are
+# rebuilt is future work, so the pin commit is recorded next to each build.
 #
 # Env: BENCH_STATE_DIR (default ~/.ocaml-bench-service)
-#      DASHBOARD_REPO  (default ~/ocaml-bench-dashboard; needs `npm install`
-#                       and bin/ingest built once, per its README)
+#      BENCH_GIT_DIR   (default <state>/git)
+#      DASHBOARD_REPO  (default <state>/git/ocaml-bench-dashboard; needs
+#                       `npm install` and bin/ingest, both done by
+#                       scripts/server-setup.sh)
 
 set -euo pipefail
 STATE="${BENCH_STATE_DIR:-$HOME/.ocaml-bench-service}"
-REPO="${DASHBOARD_REPO:-$HOME/ocaml-bench-dashboard}"
+REPO="${DASHBOARD_REPO:-${BENCH_GIT_DIR:-$STATE/git}/ocaml-bench-dashboard}"
 INTERVAL="${1:-30}"
 
 command -v node >/dev/null || { echo "dashboards: node not installed"; exit 1; }
 command -v python3 >/dev/null || { echo "dashboards: python3 not installed"; exit 1; }
 [ -d "$REPO/node_modules" ] \
-  || { echo "dashboards: $REPO has no node_modules (run npm install there)"; exit 1; }
+  || { echo "dashboards: $REPO has no node_modules (run scripts/server-setup.sh)"; exit 1; }
 [ -x "$REPO/bin/ingest" ] \
-  || { echo "dashboards: $REPO/bin/ingest missing (build it per its README)"; exit 1; }
+  || { echo "dashboards: $REPO/bin/ingest missing (run scripts/server-setup.sh)"; exit 1; }
 
 OUT="$STATE/webview/dashboards"
 mkdir -p "$OUT"
