@@ -38,6 +38,16 @@ command -v python3 >/dev/null || { echo "dashboards: python3 not installed"; exi
   || { echo "dashboards: $REPO has no node_modules (run scripts/server-setup.sh)"; exit 1; }
 [ -x "$REPO/bin/ingest" ] \
   || { echo "dashboards: $REPO/bin/ingest missing (run scripts/server-setup.sh)"; exit 1; }
+# bin/ingest is a build product of a gitignored directory, so an updated
+# checkout still carries the binary built from the OLD contract.  That one
+# rejects manifests the current producer emits, and every build here then fails
+# with "Unable to load measurements.json", a message naming a file that is fine,
+# logged once per run into dashboards/<run_id>.failed.  Refuse up front instead,
+# and say what is actually wrong.
+[ -z "$(find "$REPO/lib" "$REPO/ingest" "$REPO/dune-project" \
+          -newer "$REPO/bin/ingest" -print -quit 2>/dev/null)" ] \
+  || { echo "dashboards: $REPO/bin/ingest is older than the checkout it validates" \
+            "against (re-run scripts/server-setup.sh to rebuild it)"; exit 1; }
 
 OUT="$STATE/webview/dashboards"
 mkdir -p "$OUT"
