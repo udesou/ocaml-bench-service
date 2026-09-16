@@ -131,16 +131,31 @@ make deps build test
 # --- the dashboard build chain (per-run dashboards, §10) ---------------------
 # scripts/dashboard_builder.sh runs `npm run build` in the dashboard checkout
 # for every finished run; that needs node_modules and the OCaml ingestor.
-# Both are one-time products of the checkout -- produce them here so a fresh
-# server host works without following another repo's README.  The ingestor
-# builds in OUR local switch (its deps land in ./_opam), so no extra switch
-# appears in the opam root.
+# Both are products of the checkout -- produce them here so a fresh server host
+# works without following another repo's README.  The ingestor builds in OUR
+# local switch (its deps land in ./_opam), so no extra switch appears in the
+# opam root.
 dash="${DASHBOARD_REPO:-$GITDIR/ocaml-bench-dashboard}"
 if [ ! -d "$dash/node_modules" ]; then
   echo "installing dashboard node modules..."
   (cd "$dash" && npm install --no-fund --no-audit)
 fi
-if [ ! -x "$dash/bin/ingest" ]; then
+# The ingestor is a build product, and the dashboard repo gitignores /bin/, so
+# nothing about updating that checkout updates the binary.  It validates every
+# run against the contract it was BUILT from, so a checkout that has moved past
+# it leaves an ingestor rejecting manifests the current producer emits, and the
+# failure surfaces as "Unable to load measurements.json", naming a file that is
+# fine (ocaml-bench-dashboard#2: every run since running-ng grew machine
+# topology fields).  Rebuilding only when the binary is ABSENT never catches
+# that, so count "older than what it is built from" as missing too.  git fetch
+# does not touch the working tree, so these mtimes move only when the checkout
+# actually does.
+ingest_is_stale() {
+  [ -x "$dash/bin/ingest" ] || return 0
+  [ -n "$(find "$dash/lib" "$dash/ingest" "$dash/dune-project" \
+            -newer "$dash/bin/ingest" -print -quit 2>/dev/null)" ]
+}
+if ingest_is_stale; then
   echo "building the dashboard ingestor..."
   opam install --switch="$ROOT" --yes --deps-only "$dash"
   (cd "$dash" && opam exec --switch="$ROOT" -- dune build ingest/ingest.exe)
