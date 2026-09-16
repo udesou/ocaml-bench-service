@@ -45,13 +45,46 @@ sync_once() {
   # Without this, Pages' Jekyll pass silently drops the dashboard assets
   # (everything under _observablehq/).
   touch "$DIR/.nojekyll"
-  # Pages has no directory listing, so the run pages' "bundle" links would
-  # 404: give each published bundle a generated index.html (deterministic, so
-  # an unchanged bundle produces no git diff).  Only the PUBLISHED copy gets
-  # these; the store itself stays free of presentation files.
+  # Two post-rsync passes over the PUBLISHED copy only; the store itself stays
+  # free of both.  They run in this order because the second reports file sizes
+  # and so must see what the first leaves behind.
+  #
+  # 1. Drop execution.json's last_heartbeat_epoch.  It moves on every heartbeat,
+  #    which made this loop commit every ~30s for the whole of a run -- 5,752
+  #    commits across one 48h sweep, each one a single changed line, each firing
+  #    a pages-build-deployment.  Nothing published reads it: it is the server's
+  #    own lease bookkeeping (server.ml, `now - last_heartbeat > lease_seconds`),
+  #    and a reader wanting liveness has runs.json's state and events.ndjson,
+  #    both of which move only when something real happens.
+  # 2. Pages has no directory listing, so the run pages' "bundle" links would
+  #    404: give each published bundle a generated index.html (deterministic, so
+  #    an unchanged bundle produces no git diff).
   python3 - "$DIR" <<'PYEOF'
-import os, sys, html
+import os, sys, html, json
 runs = os.path.join(sys.argv[1], "runs")
+
+# --- 1. de-churn the published execution.json -------------------------------
+VOLATILE = ("last_heartbeat_epoch",)
+for run in (sorted(os.listdir(runs)) if os.path.isdir(runs) else []):
+    p = os.path.join(runs, run, "execution.json")
+    try:
+        with open(p) as f:
+            e = json.load(f)
+    except (OSError, ValueError):
+        continue  # absent or mid-write: leave it alone, try again next round
+    if not any(k in e for k in VOLATILE):
+        continue
+    for k in VOLATILE:
+        e.pop(k, None)
+    # sort_keys so the output cannot depend on dict order, which would
+    # reintroduce exactly the churn this is removing.
+    tmp = p + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(e, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, p)
+
+# --- 2. per-bundle index.html ----------------------------------------------
 for run in (sorted(os.listdir(runs)) if os.path.isdir(runs) else []):
     d = os.path.join(runs, run)
     if not os.path.isdir(d):
