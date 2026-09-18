@@ -39,8 +39,8 @@ Every run also gets:
 - a full **dashboard** built from its measurements: overview, absolute
   values, parameter sweeps, curves, space against time with Pareto
   frontiers;
-- a public copy of all of it on **GitHub Pages**, where the results repo
-  doubles as the archive. (provisionally)
+- a public copy of all of it on **GitHub Pages** (provisional), where the
+  results repo doubles as the archive.
 
 ## The `/bench` grammar
 
@@ -65,28 +65,30 @@ Every run also gets:
 ```
 
 The baseline defaults to the PR's merge base, so a bare `/bench` answers the
-question *does this change performance?* using the default benchmarks and 3 
-invocations to minimize noise. Sweep parameters take either the `OCAMLRUNPARAM` letter (`o`)
-or the contract's canonical name (`space_overhead`).
+question *does this change performance?* using the default benchmarks and 3
+invocations to minimize noise. Sweep parameters take either the `OCAMLRUNPARAM`
+letter (`o`) or the contract's canonical name (`space_overhead`). `/bench help`
+is generated from the live config, so it never disagrees with what the service
+will accept.
 
 ## Who can trigger a run
 
-We maintain an allowlist of GitHub logins. Please contact 
-@tmcgilchrist or @udesou to be added to the allowlist.
+We maintain an allowlist of GitHub logins. Contact @tmcgilchrist or @udesou to
+be added to it.
 
 ## How it is put together
 
 One server, one agent, and static pages:
 
-- **`bench-serve`** owns the request side: grammar, allowlist, request validation,
-  and construction a run spec. Access is a **capability file**: the daemon 
-  writes one per configured login, and handing someone their file is granting 
-  access. There are no passwords or tokens anywhere else.
-- **`bench-agent`** lives on the bench machine and dials out. It claims work, checks out the
-  exact pinned sources, runs the orchestrator under a timeout in its own process
-  group, heartbeats every 30 seconds (a cancellation arrives as the reply),
-  and uploads the artifacts on failure as well as success. If an agent
-  dies, its lease expires and the run becomes claimable again.
+- **`bench-serve`** owns the request side: grammar, allowlist, request
+  validation, and constructing a run spec. Access is a **capability file**: the
+  daemon writes one per configured login, and handing someone their file is
+  granting access. There are no passwords or tokens anywhere else.
+- **`bench-agent`** lives on the bench machine and dials out. It claims work,
+  checks out the exact pinned sources, runs the orchestrator under a timeout in
+  its own process group, heartbeats every 30 seconds (a cancellation arrives as
+  the reply), and uploads the artifacts on failure as well as success. If an
+  agent dies, its lease expires and the run becomes claimable again.
 - **The webview** is static pages over the store's files: a runs index, a
   per-run page, and one dashboard per finished run, provisionally published to
   a GitHub Pages repo so results have a public home.
@@ -157,6 +159,7 @@ and checks a run spec without a server; CLAUDE.md documents it.
 | `lib/run_key.ml` | the content identity of a measurement (result reuse) |
 | `lib/cost.ml` | the estimate and the budget limit |
 | `lib/authz.ml`, `lib/service_config.ml` | allowlist, roles, bot identity, machine registry |
+| `lib/facts.ml`, `lib/help.ml`, `lib/tag_alias.ml` | the live view of running-ng's suites and tags, and the generated `/bench help` |
 | `lib/bridge.ml`, `scripts/rng_helper.py` | the only path to running-ng's own logic |
 | `rpc/` | the Cap'n Proto adapter: schema and service/client glue |
 | `bin/bench_serve.ml` | the server daemon; writes the capability files |
