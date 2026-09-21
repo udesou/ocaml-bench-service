@@ -1,20 +1,7 @@
-(* Cost estimation and the budget guard.
-
-   A single comment can ask for twenty hours of machine time
-   (`tag=all invocations=3 sweep=...` with four values), and the machine is
-   serial by necessity.  So the estimate is computed before the request is
-   accepted, shown in the acknowledgement, and enforced.
-
-   The unit is the *cell*: one (program, config) pair, run `invocations` times,
-   each in a fresh process.
-
-   `default_cell_seconds` is calibrated against the one measurement we have:
-   20 min per invocation for 2 runtimes over the 20 `default_run` programs
-     = 1200 s / (20 programs * 2 configs) = 30 s per cell-invocation.
-   It is a parameter, not a constant, because it should be replaced by
-   per-program historical timings as soon as the service has run enough jobs to
-   have any -- a single mean badly under-estimates coq and badly over-estimates
-   yojson. *)
+(* Cost estimation and the budget guard: computed before acceptance, shown in
+   the acknowledgement, enforced.  The unit is the cell, one (program, config)
+   pair run `invocations` times.  `default_cell_seconds` is calibrated from one
+   measurement (30 s per cell-invocation); per-program history should replace it. *)
 
 type t = {
   programs : int;
@@ -56,9 +43,8 @@ let explain t =
     (human t.seconds) t.programs t.configs t.invocations
     (t.cells * t.invocations)
 
-(* The refusal text is user-facing: it must say what to change, not just that
-   the request was too big.  `force=true` is admin-only (Q4), and the text says
-   so rather than dangling an option most readers cannot use. *)
+(* The refusal must say what to change.  `force=true` is admin-only and the
+   text says so rather than dangling an option most readers cannot use. *)
 let refusal ?(cap_seconds = default_cap_seconds) t =
   Printf.sprintf
     "This request is estimated at **%s**, over the %s limit.\n\n%s\n\nTo shrink \

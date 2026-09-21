@@ -1,16 +1,7 @@
-(* bench-serve -- the request server daemon.
-
-   Hosts the API A implementation (lib/server.ml) behind Cap'n Proto (Q15).
-   Identity is a capability file, ocluster's model: at startup the daemon
-   (re)writes <caps-dir>/<login>.cap for every login in the allowlist and
-   admins list, plus bot.cap for the PR bot.  Handing someone their file is
-   how access is granted; deleting a login from service.json and restarting
-   revokes it (the sturdy ids derive from the login and the vat's secret key,
-   so a removed login's old file no longer restores to anything).
-
-   The default listen address is a unix-domain socket under the state dir;
-   pass --listen tcp:HOST:PORT (and usually --public-address) to serve over
-   the network. *)
+(* bench-serve: the request server daemon, API A behind Cap'n Proto.  Identity
+   is a capability file: at startup the daemon (re)writes <caps-dir>/<login>.cap
+   for every allowlisted login and admin, plus bot.cap.  Removing a login from
+   service.json and restarting revokes it (sturdy ids derive from the login). *)
 
 open Bench_service
 open Bench_rpc
@@ -27,10 +18,9 @@ type opts = {
   secret_key : string option;
   resolver : string;
   base_url : string;
-  (* Every path the server reads code or metadata from is an OPTION whose
-     default hangs off --state-dir (below).  The server owns its clones: a
-     host that also carries a developer checkout, or a bench agent, must not
-     share git objects, refs or build products with the service. *)
+  (* Every code/metadata path is an option defaulting under --state-dir.  The
+     server owns its clones: a host with a developer checkout or a bench agent
+     must not share git objects or build products with the service. *)
   base_config : string option;
       (* given: use flag paths verbatim instead of extracting from the
          running-ng pin (hermetic runs, the live check) *)
@@ -73,8 +63,7 @@ let default_opts () =
     max_active_per_user = 2;
   }
 
-(* The server's own clones live under <state>/git/<name>.  Filename.concat
-   rather than "/" so this stays right wherever the service is built. *)
+(* The server's own clones live under <state>/git/<name>. *)
 let repo_dir o name = Filename.concat (Filename.concat o.state_dir "git") name
 
 let running_ng_dir o =
@@ -172,8 +161,8 @@ let parse_args argv =
   go argv;
   !o
 
-(* extract a running-ng tree at a pinned commit (the config AND the python
-   must come from the same sha the specs pin) *)
+(* extract a running-ng tree at a pinned commit: the config and the python
+   must come from the same sha the specs pin *)
 let extract_tree ~dir ~commit ~dst =
   let q = Filename.quote in
   if Sys.command (Printf.sprintf "rm -rf %s && mkdir -p %s" (q dst) (q dst)) <> 0
@@ -195,10 +184,9 @@ let deps o ~on_bump =
     | Ok c -> c
     | Error e -> die "bad service config %s: %s" o.service_config e
   in
-  (* The pins: seeded from these SERVER-SIDE checkouts on first start, then
-     changed only by `bump` (+ restart).  Missing checkouts are skipped with
-     a warning.  These are the server's metadata clones, nothing to do with
-     where the agent checks sources out (§6.1: the agent owns its paths). *)
+  (* Pins are seeded from these server-side checkouts on first start, then
+     changed only by `bump` (+ restart).  Missing checkouts are skipped with a
+     warning. *)
   let pin_config =
     [
       (Api.Running_ng, running_ng_dir o, o.running_ng_ref);
@@ -309,7 +297,7 @@ let deps o ~on_bump =
         match component with
         | Api.Running_ng -> (
           (* dry-run the candidate: extract it and load facts through its own
-             python -- the drift class of failure surfaces HERE, not later *)
+             python, so drift surfaces here, not later *)
           let dst = Filename.concat o.state_dir "pin-check" in
           match extract_tree ~dir:(running_ng_dir o) ~commit ~dst with
           | Error m -> Error m
@@ -392,10 +380,9 @@ let () =
   in
   let bot_id = Capnp_rpc_unix.Vat_config.derived_id config "bot" in
   Capnp_rpc_net.Restorer.Table.add services bot_id (Rpc.bench_bot d);
-  (* One agent capability per registered machine (§6.2): the file IS the
-     machine's identity, exactly as <login>.cap is a user's.  It lives on the
-     bench machine, which is treated as compromisable -- an agent capability
-     can only claim/report its own machine's work, never submit or admin. *)
+  (* One agent capability per registered machine: the file is the machine's
+     identity.  It lives on the bench machine, treated as compromisable, so it
+     can only claim/report its own machine's work. *)
   let agent_ids =
     List.map
       (fun name ->
@@ -426,9 +413,8 @@ let () =
   Printf.printf "bench-serve: listening on %s (resolver: %s, queue: %s)\n%!"
     listen o.resolver
     (Filename.concat o.state_dir "runs");
-  (* Adoption is a restart: after a bump, re-exec with the same argv (same
-     pid, tmux session survives, pins.json is re-read).  The delay lets the
-     bump reply flush to the client first. *)
+  (* Adoption is a restart: re-exec with the same argv (same pid, tmux survives,
+     pins.json re-read).  The delay lets the bump reply flush first. *)
   let clock = Eio.Stdenv.clock env in
   let rec watch () =
     Eio.Time.sleep clock 0.5;

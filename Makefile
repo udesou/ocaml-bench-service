@@ -1,19 +1,9 @@
-# Self-contained build.
-#
-# `make switch` creates a LOCAL switch in ./_opam, so the service never depends
-# on a switch that happens to exist on the machine, and never touches the
-# active one.  Removing it is `rm -rf _opam` (or `make distclean`).
-#
-# Deliberately a local switch rather than a named one: the bench machine's opam
-# root is shared with running-ng, whose switches are its compiler cache, and
-# adding named switches to someone else's root is how that gets confusing.
-#
-# NOTE: `make switch` builds a compiler and takes opam's root lock. Don't run it
-# while a benchmark is running -- opam would serialise against running-ng's own
-# provisioning. `make check-idle` tells you whether it is safe.
+# Self-contained build: `make switch` creates a local switch in ./_opam, never
+# touching the machine's active switch or adding named switches to the bench
+# machine's shared opam root.  It builds a compiler and takes opam's root lock,
+# so do not run it while a benchmark is running (`make check-idle`).
 
-# The capnp schema compiler is a system tool (schema codegen in rpc/); on
-# machines without sudo it is built from source into ~/.local/bin.
+# capnp is a system tool; machines without sudo build it into ~/.local/bin.
 export PATH := $(HOME)/.local/bin:$(PATH)
 
 OCAML_VERSION ?= 5.4.1
@@ -22,7 +12,7 @@ SWITCH        ?= .
 OPAMRUN        = $(OPAM) exec --switch=$(SWITCH) --
 DUNE           = $(OPAMRUN) dune
 
-# Sibling repos we read (never write): the runner and the data contract.
+# Sibling repos we read (never write).
 RUNNING_NG_SRC  ?= $(HOME)/running-ng/src
 RUNNING_NG_REPO ?= $(HOME)/running-ng
 RUNNING_NG_REF  ?= origin/adding-ocaml-support
@@ -33,10 +23,9 @@ VOCAB           ?= $(HOME)/ocaml-bench-dashboard/schema/json/vocab.json
 all: build
 
 ## switch: create the local ./_opam switch and install dependencies
-# --repositories=default pins the switch to the stock opam repo: machines
-# that run running-ng accumulate overlay repos (relocatable, oxcaml) in the
-# opam root, and if one sits in the root's default selection a plain switch
-# create silently builds a patched compiler.  Bitten on two machines.
+# --repositories=default pins the switch to the stock opam repo: an overlay repo
+# (relocatable, oxcaml) in the root's default selection makes a plain switch
+# create silently build a patched compiler.
 switch: check-idle
 	$(OPAM) switch create $(SWITCH) ocaml-base-compiler.$(OCAML_VERSION) \
 	  --repositories=default --no-install --yes
@@ -63,8 +52,8 @@ live: build
 check: build test live
 
 ## fixtures: refresh the test snapshots from a pinned running-ng ref
-# From a REF, not the working copy: the checkout moves between feature branches,
-# and a fixture captured from one of them silently changes what the tests mean.
+# From a ref, not the working copy: a fixture captured from a feature branch
+# silently changes what the tests mean.
 fixtures:
 	git -C $(RUNNING_NG_REPO) show \
 	  $(RUNNING_NG_REF):src/running/config/base/ocaml/macro_base.yml \

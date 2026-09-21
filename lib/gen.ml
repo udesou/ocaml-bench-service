@@ -1,34 +1,19 @@
-(* Request + base-config facts -> a running-ng run spec.
+(* Request + base-config facts -> a running-ng run spec.  Pure: resolving refs,
+   counting programs and writing files are the caller's job.  The benchmark set
+   is selected by the RUNNING_TAG environment variable, not by a config field,
+   so the config alone does not describe the run.
 
-   The output is a triple, not just a YAML file: the benchmark set is driven by
-   the RUNNING_TAG environment variable (apply_tag_filter), not by a config
-   field, so the config alone does not describe the run.
-
-   Everything here is pure.  Resolving refs to shas, counting programs via the
-   bridge, and writing files are the caller's job -- which is what lets the
-   generator be table-tested without python, a network, or a machine.
-
-   Shape rules that are not obvious and are load-bearing.  Each of these fails
-   SILENTLY if got wrong, which is why they are encoded here and tested:
-
-   * The config `includes:` macro_base.yml and declares only runtimes, configs,
-     modifiers, config_sweep, comparisons, overrides.  "Config layering is law."
-   * `invocations` must go through `overrides:` -- redefining a base top-level
-     scalar at top level is a combine() TypeError.
-   * `comparisons:` uses running-ng's label/a/b shape, NOT the contract's
-     kind/over/baseline/variants.  contract/native.py::_map_comparisons
-     translates on emission.
-   * A sweep must define its modifier: s/o/M/m are not in macro_base.yml.
-   * The measurement modifier chain is DERIVED from the base config, never
-     hardcoded -- running-ng moved the runtime_events settings onto benchmarks
-     mid-project (#15) and may move the parallel ones next.  See modifier_chain.
-   * No `plugins:` block -- notification is the bot's job, not Zulip's. *)
+   Shape rules that fail silently when got wrong: the config `includes:`
+   macro_base.yml and declares only runtimes, configs, modifiers, config_sweep,
+   comparisons, overrides; `invocations` must go through `overrides:` (a
+   top-level redefinition is a combine() TypeError); `comparisons:` uses
+   running-ng's label/a/b shape, translated by contract/native.py; a sweep must
+   define its modifier (s/o/M/m are not in macro_base.yml). *)
 
 type context = {
   request_id : string;
-      (* Ours.  NOT the contract's run_id: running-ng names the run directory
-         itself (<host>-<timestamp>), and that is what lands in the manifest.
-         This id ties the config back to the queue row and to request.json. *)
+      (* Ours, not the contract's run_id (running-ng names the run directory itself);
+         ties the config back to the queue row and request.json. *)
   base_include : string;
   machine : string;
   requested_by : string option;
@@ -48,36 +33,25 @@ type t = {
   warnings : string list;
 }
 
-(* Measurement infrastructure, fixed on purpose: these size the runtime_events
-   ring and the domain cap for olly.  Not knobs a PR author should touch -- a
-   wrong ring size silently drops events, and `re`/`re_par` without a matching
-   domain cap makes OCaml demand ~4 GB for the ring and abort (it sizes the ring
-   as max_domains * 2^e).
-
-   Whether they belong in the config string at all is derived from the base
-   config, not assumed -- see modifier_chain. *)
+(* Fixed on purpose: these size the runtime_events ring and olly's domain cap.
+   A wrong ring size silently drops events, and `re`/`re_par` without a matching
+   domain cap makes OCaml demand ~4 GB for the ring and abort.  Whether they
+   belong in the config string is derived from the base config (modifier_chain). *)
 let ring_log2 = 25
 let max_domains = 2
 let ring_log2_par = 22
 let max_domains_par = 8
 
-(* The modifier chain after the runtime, derived from what the base config does.
-
-   * Sequential `re`/`md`: emitted only when the base config does NOT declare
-     `ocamlrunparam:` on its suites.  Since running-ng #15 those live on the
-     benchmarks that need them (five macro suites declare `e=25,d=2`), and a
-     config-string value is merged *under* the benchmark's -- so emitting them
-     would reintroduce a global setting for every other suite, which is exactly
-     what that change removed.  Kept for older branches, which still need them.
-   * Parallel `re_par`/`md_par`/`pin_lavyek`: emitted only when a suite that
-     needs them actually has enabled programs.  #15 left this path in the config
-     string on purpose.  Emitting it unconditionally is harmless (the base routes
-     it with `excludes:`) but misleading; omitting it when a lavyek suite IS
-     enabled makes wall_time go negative. *)
-(* A config-string token is either a bare modifier name (`pin_lavyek`) or a name
-   with a value (`re-25`).  The base config declares the *name*, so that is what
-   an existence check must compare.  Modifier names use underscores, never
-   dashes, so a trailing `-<digits>` is always a value. *)
+(* The modifier chain after the runtime, derived from the base config.
+   Sequential `re`/`md` are emitted only when the base config does not declare
+   `ocamlrunparam:` on its suites (since running-ng #15 the benchmarks that
+   need them declare it, and emitting them would reinstate a global setting).
+   Parallel `re_par`/`md_par`/`pin_lavyek` are emitted only when a suite that
+   needs them has enabled programs: omitting them for an enabled lavyek suite
+   makes wall_time go negative. *)
+(* A token is a bare modifier name or name-value (`re-25`); the base config
+   declares the name.  Names use underscores, never dashes, so a trailing
+   `-<digits>` is always a value. *)
 let modifier_name token =
   match String.rindex_opt token '-' with
   | Some i ->
@@ -102,8 +76,7 @@ let modifier_chain (facts : Facts.t) =
   in
   sequential @ parallel
 
-(* Every refusal is an API A error envelope: the message is postable verbatim,
-   the code is for requester logic.  Everything here is a bad command except
+(* Every refusal is an API A error envelope.  Everything is a bad command except
    the cost cap, which gets its own code so a client can tell "fix the
    spelling" from "shrink the request". *)
 let err fmt = Api.error Api.Bad_command fmt
@@ -434,8 +407,8 @@ let generate ~ctx ~(request : Request.t) ~(facts : Facts.t) ~sweepable ~variants
          (flow_list (List.map Variant.runtime_name candidates)))
   end;
 
-  (* Machine-independent env only: paths are the agent's (§6.1); bench-gen
-     appends its own dev-local ones when printing a by-hand recipe. *)
+  (* Machine-independent env only: paths are the agent's; bench-gen appends its
+     own dev-local ones when printing a by-hand recipe. *)
   let env =
     [
       (* Reuse is the service's policy: the switch is the compiler cache and a

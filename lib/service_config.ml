@@ -1,23 +1,7 @@
 (* Service configuration: bot identity, who may trigger, which machines exist.
-
-   All three are config, never constants:
-
-   * The **bot account** must be swappable -- the prototype runs as a throwaway
-     account (as Julia's Nanosoldier does) and will move to a real one.  Nothing
-     in the code names it, and the token is read from a named environment
-     variable so rotating it never touches a source file.
-   * The **allowlist** must be extendable without a deploy: a maintainer edits
-     this file and the next request sees it.
-   * The **admins** are the allowlist's privileged subset (§5.4): they may use
-     `force=true` and `priority=top`, cancel anyone's run, and operate machines.
-     An admin need not appear in `allowlist` too.
-   * The **machine registry** is how machines are added and removed.  An entry
-     is really a *slot*: one concurrent run, because running-ng locks the opam
-     root -- which is also the property that keeps two measurements from
-     overlapping on one machine.  No ssh coordinates and NO PATHS: the server
-     never connects to a bench machine (Q1, the agent dials out), and where
-     things live on the machine is the AGENT's configuration (§6.1) -- the
-     registry holds names and policy, nothing else. *)
+   The bot token is read from a named environment variable; admins need not
+   appear in `allowlist`; a machine entry is one slot (running-ng locks the opam
+   root) and holds names and policy only, never paths or ssh coordinates. *)
 
 type bot = { account : string; token_env : string }
 
@@ -35,14 +19,13 @@ type t = {
   cap_seconds : float;
   cell_seconds : float;
   flavors : (string * string) list;
-      (* build flavors: grammar name -> configure args, canonical order.
-         The vs= `+name` suffixes resolve against this; names and args must
-         both be unique or runtime names stop being injective. *)
+      (* build flavors: grammar name -> configure args, canonical order; names
+         and args must both be unique or runtime names stop being injective *)
   report : Report.thresholds;
-      (* verdict bands + gates for report.md (§5.5); provisional until Q12 *)
+      (* verdict bands + gates for report.md; provisional *)
   timeout : Runspec.timeout_policy;
-      (* the execution timeout the assignment carries; multiplier 0 disables
-         it (slow machines where the monolith-calibrated estimate misleads) *)
+      (* execution timeout the assignment carries; multiplier 0 disables it
+         (slow machines where the calibrated estimate misleads) *)
 }
 
 let member k = function
@@ -209,9 +192,8 @@ let default_machine t =
 
 let machine_names t = List.map (fun m -> m.name) t.machines
 
-(* Resolve `machine=` against the registry.  An unknown name is a user error
-   with the list attached, not a silent fallback to the default -- silently
-   running somewhere else would make the numbers unattributable. *)
+(* An unknown machine name is a user error with the list attached, never a
+   silent fallback to the default: the numbers would be unattributable. *)
 let resolve_machine t = function
   | None -> (
     match default_machine t with

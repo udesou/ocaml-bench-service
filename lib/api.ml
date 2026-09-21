@@ -1,34 +1,18 @@
-(* API A: the Request API (architecture document, §5).
+(* API A, the request API: the one public surface of the service.  The PR bot
+   and the CLI are thin clients of it and the wire protocol is an adapter over
+   this module.  Types marked PROVISIONAL are not agreed yet. *)
 
-   The one public surface of the service: the PR bot and the CLI are thin
-   clients of it, and any future requester (web form, scheduler) implements
-   nothing else.  This module is the OCaml module signature the document
-   specifies, plus the payload types and their JSON encodings; the wire
-   protocol (HTTP+JSON now, capnp later, §5.6) is an adapter over it.
-
-   Two kinds of definition live here, and the distinction matters:
-
-   * Types the document defines in §5.2/§5.3 (including its "Referenced
-     types" block) are transcribed verbatim.  Do not "improve" them here --
-     a change starts in the document.
-   * `meta` and `event` are owned by the document's store (§8) and progress
-     (§7) sections, which are not agreed yet: PROVISIONAL, marked below. *)
-
-(* --- identity and roles (§5.1, §5.4) ------------------------------------- *)
+(* --- identity and roles --------------------------------------------------- *)
 
 type role = User | Admin
 
-(* Everything a requester proves about itself; HOW it proves it differs per
-   requester kind (the bot asserts a verified commenter login, the CLI maps a
-   bearer token to a login) and never reaches this layer. *)
+(* What a requester proves about itself; how it proves it (verified commenter
+   login, bearer token) never reaches this layer. *)
 type auth = { login : string; role : role }
 
-(* What the requester already knows about where the command came from.  The
-   bot forwards what the webhook payload carries -- the server still resolves
-   the PR head and merge base itself (an issue_comment payload does not
-   include the head sha, and the merge base needs a GitHub call regardless);
-   anything the bot does know is passed along, both to save lookups and to
-   land verbatim in the audit record (request.json). *)
+(* What the requester knows about where the command came from.  The server
+   still resolves the PR head and merge base itself; whatever the bot knows is
+   passed along and lands verbatim in request.json. *)
 type pr_context = {
   repo : string;  (** "owner/name" *)
   number : int;
@@ -38,11 +22,11 @@ type pr_context = {
   head_sha : string option;
       (** if the requester saw it; else the server resolves *)
   base_ref : string option;
-      (** the PR's target branch, if the requester knows it; the merge-base
-          baseline is computed against it (default: trunk) *)
+      (** the PR's target branch, if known; the merge base is computed against it
+          (default: trunk) *)
 }
 
-type origin_kind = Pr_comment of pr_context | Cli (* later: Web, Schedule *)
+type origin_kind = Pr_comment of pr_context | Cli
 
 type origin = {
   kind : origin_kind;
@@ -50,8 +34,8 @@ type origin = {
 }
 
 type submit = { command : string; origin : origin }
-(* [command] is the raw string, e.g. "/bench tag=small invocations=1 vs=trunk".
-   The server owns the grammar; requesters never parse. *)
+(* [command] is the raw string; the server owns the grammar, requesters never
+   parse. *)
 
 (* --- the error envelope --------------------------------------------------- *)
 
@@ -65,18 +49,17 @@ type error_code =
   | Machine_drained
   | Not_found
   | Internal
-      (** the SERVICE failed, not the request: the markdown stays generic
-          and carries a short id that indexes the detail in the server log *)
+      (** the service failed, not the request: generic markdown plus a short id
+          that indexes the detail in the server log *)
 
 type error = { code : error_code; error_markdown : string }
-(* [error_markdown] is ALWAYS safe to post to a PR verbatim. *)
+(* [error_markdown] is always safe to post to a PR verbatim. *)
 
 let error code fmt =
   Printf.ksprintf (fun error_markdown -> Error { code; error_markdown }) fmt
 
-(* An internal failure: the DETAIL (tool output, tracebacks) goes to stderr --
-   the daemon's log -- under a short id; the postable message carries only the
-   id, so an operator can grep the log for exactly this incident. *)
+(* An internal failure: the detail goes to stderr (the daemon's log) under a
+   short id; the postable message carries only the id. *)
 let internal ~detail fmt =
   let id =
     "i-"
@@ -99,28 +82,26 @@ let internal ~detail fmt =
         })
     fmt
 
-(* --- payload types (§5.3) ------------------------------------------------- *)
+(* --- payload types ---------------------------------------------------------- *)
 
-type family = Macro | Micro (* Micro is reserved: refused until §12 lands *)
+type family = Macro | Micro (* Micro is reserved: refused for now *)
 
 type runtime_pin = {
   name : string;
-      (** running-ng runtime name = the compiler cache key.
-          Server-constructed, injective in (sha, configure_args). *)
+      (** running-ng runtime name = the compiler cache key; server-constructed,
+          injective in (sha, configure_args) *)
   commit : string;  (** resolved sha; never a ref *)
   repo : string;
-      (** clone URL the sha is fetched from: a fork PR's head exists only on
-          the fork.  Not part of identity -- a sha is globally unique. *)
+      (** clone URL the sha is fetched from (a fork PR's head exists only on the
+          fork); not part of identity *)
   configure_args : string;  (** e.g. "--enable-flambda" *)
 }
-(* Commit-only, decided: a released baseline (vs=5.4.1) is resolved by the
-   SERVER to its release-tag sha, which running-ng builds identically to
-   `version:`.  lib/variant.ml keeps the `version` spelling only as an offline
-   convenience for bench-gen, which cannot resolve; server-produced pins
-   always carry the sha. *)
+(* Commit-only: a released baseline (vs=5.4.1) is resolved by the server to its
+   release-tag sha.  lib/variant.ml keeps the `version` spelling only as an
+   offline convenience for bench-gen, which cannot resolve. *)
 
-(* What the command actually meant, echoed back so the user can catch a wrong
-   resolution early. *)
+(* What the command actually meant, echoed back so a wrong resolution is caught
+   early. *)
 type resolved = {
   baseline : runtime_pin;  (** the PR's merge base by default *)
   candidates : runtime_pin list;
@@ -143,20 +124,18 @@ type accepted = {
 
 type reused = {
   run_id : string;  (** the completed run that already answers this *)
-  run_key : string;  (** why it matched (§8.1) *)
+  run_key : string;  (** why it matched *)
   links : links;
   ack_markdown : string;
 }
 
 type submit_outcome =
-  | Accepted of accepted  (** a new run was queued *)
-  | Reused of reused  (** run key matched a completed run (§8.1) *)
+  | Accepted of accepted
+  | Reused of reused  (** run key matched a completed run *)
   | Duplicate of { run_id : string; links : links }  (** idempotency key hit *)
   | Answered of { markdown : string }
-      (** commands that are answers, not runs (/bench help, /bench cancel):
-          the server acts and replies; requesters post the markdown verbatim.
-          Exists because the grammar lives in the server (Q13): a requester
-          cannot pre-parse these and route them itself (Q18) *)
+      (** commands that are answers, not runs (/bench help, /bench cancel): the
+          server acts and replies, requesters post the markdown verbatim *)
 
 type run_state =
   | Queued
@@ -200,7 +179,7 @@ type run_status = {
   completion : completion option;  (** once terminal *)
 }
 
-(* --- the vocabulary (§5.2) ------------------------------------------------ *)
+(* --- the vocabulary --------------------------------------------------------- *)
 
 type sweepable = {
   param : string;  (** what sweep= accepts: the OCAMLRUNPARAM letter, "o" *)
@@ -209,20 +188,18 @@ type sweepable = {
 }
 
 type machine_type = string
-(* a bare name for now, deliberately: what a machine should expose to
-   requesters (architecture? governor? dedicated or not?) is undecided *)
+(* a bare name deliberately: what a machine exposes to requesters is undecided *)
 
-(* --- version pins (§6.3) ---------------------------------------------------- *)
+(* --- version pins ----------------------------------------------------------- *)
 
-(* The bumpable components: everything the server pins into specs and builds.
-   The service and the agent themselves are absent on purpose -- they change
-   by DEPLOYING, not bumping, and the variant makes that unrepresentable. *)
+(* The bumpable components.  The service and the agent are absent on purpose:
+   they change by deploying, not bumping. *)
 type component = Running_ng | Macro_benches | Benches | Olly | Dashboard
 
 type pin = {
   pinned_component : component;
   track : string;  (** what a bare bump re-resolves: a ref or tag *)
-  commit : string;  (** the adopted sha *)
+  commit : string;
   version : string option;  (** X.Y.Z where the component declares one *)
   bumped_at : string;
   bumped_by : string;
@@ -232,8 +209,7 @@ type versions = {
   service : string;  (** the server's own build; changes by deploying *)
   pins : pin list;
   machines : (string * (string * string) list) list;
-      (** machine -> agent-REPORTED versions (agent build, olly checkout,
-          kernel ...); empty until agents exist *)
+      (** machine -> agent-reported versions; empty until agents exist *)
 }
 
 let string_of_component = function
@@ -259,7 +235,7 @@ type vocab = {
   max_invocations : int;
 }
 
-(* --- referenced types (§5.3 "Referenced types") ---------------------------- *)
+(* --- referenced types ------------------------------------------------------- *)
 
 (* Cursor pagination, newest first. *)
 type page = { limit : int; after : string option }
@@ -276,11 +252,10 @@ type filter = {
 let no_filter =
   { pr = None; requester = None; state = None; machine = None; family = None }
 
-(* PROVISIONAL below this line: `meta` and `event` are owned by the store (§8)
-   and progress (§7) sections, which are not agreed yet; API A returns them
-   as-is. *)
+(* PROVISIONAL below this line: `meta` and `event` belong to the store and
+   progress designs, which are not agreed yet. *)
 
-(* The compact per-run record the webview index lists (§8 draft). *)
+(* The compact per-run record the webview index lists. *)
 type meta = {
   run_id : string;
   state : run_state;
@@ -291,11 +266,11 @@ type meta = {
   machine : string;
   family : family;
   baseline : runtime_pin option;
-      (* §8 makes this required; option here because pre-webview rows
-         lack it and the index must keep rendering them *)
+      (* option because pre-webview rows lack it and the index must keep
+         rendering them *)
   candidates : runtime_pin list;
   queued_at : string;
-  started_at : string option;  (* first claim; §8 *)
+  started_at : string option;  (* first claim *)
   finished_at : string option;
   duration_seconds : int option;
   cells_passed : int;
@@ -304,14 +279,14 @@ type meta = {
   links : links;
 }
 
-(* One progress record (§7 draft).  Events belong to an execution. *)
+(* One progress record.  Events belong to an execution. *)
 type event = {
   seq : int;  (** monotone per run *)
   ts : string;  (** ISO-8601 *)
   run_id : string;
   execution : int;
   body : Yojson.Safe.t;
-      (** the §7 body variants, kept opaque until API E is agreed *)
+      (** body variants, kept opaque until the progress API is agreed *)
 }
 
 type machine_status = {
@@ -322,20 +297,16 @@ type machine_status = {
 
 type cache_selector = All_caches | Runtime_cache of string (* runtime name *)
 
-(* --- API B: the run execution API (§6.2) ----------------------------------- *)
-(* The §6.2 types.  Deviations from the document's spelling, both raised:
-   `agent_auth` does not exist here (the capability IS the machine, the same
-   collapse that removed --login from API A), and claim's `slot` argument is
-   gone for the same reason -- the capability names the machine, and a machine
-   is one slot (Service_config: one concurrent run because running-ng locks
-   the opam root).  `artifact` and `execution_result` are referenced by the
-   document without a definition: PROVISIONAL spellings below. *)
+(* --- API B: the run execution API ------------------------------------------- *)
+(* No agent_auth: the capability is the machine.  No slot argument: a machine is
+   one slot (running-ng locks the opam root).  `artifact` and `execution_result`
+   spellings are PROVISIONAL. *)
 
 type execution_id = { run_id : string; execution : int }
 
-(* §6.3: switch-provenance.json, the recorded build inputs of one switch.
-   The runtime name cannot see the environmental inputs (dune, opam repo
-   state), so reuse compares this record, never the name alone. *)
+(* switch-provenance.json, the recorded build inputs of one switch.  The runtime
+   name cannot see environmental inputs (dune, opam repo state), so reuse
+   compares this record, never the name alone. *)
 type provenance = {
   compiler_sha : string;
   configure_args : string;
@@ -346,9 +317,8 @@ type provenance = {
 }
 
 type cache_entry =
-  (* agent-side caches only (§6.3): each class has its own key shape, hence a
-     constructor each.  Checkouts are not reported: re-pinned per run, they
-     cannot be stale. *)
+  (* agent-side caches only; checkouts are re-pinned per run and cannot be
+     stale *)
   | Switch of {
       runtime_name : string;
       provenance : provenance;
@@ -364,15 +334,13 @@ type cache_entry =
     }
 
 type assignment = {
-  (* an execution: the spec plus execution-scoped directives, which never
-     live in the spec *)
+  (* the spec plus execution-scoped directives, which never live in the spec *)
   id : execution_id;
   spec : Yojson.Safe.t;  (** the run spec (docs/RUNSPEC.md), verbatim *)
   caches : [ `Reuse | `Bypass ];  (** Bypass when the run came from `rerun` *)
   resume : bool;
       (** `/bench continue`: re-enter the previous execution's run directory
-          (running-ng --resume) so completed cells are kept and failed
-          builds retried; false = a fresh run directory *)
+          (running-ng --resume); false = a fresh run directory *)
   timeout_seconds : int;
 }
 
@@ -387,23 +355,20 @@ type execution_result = {
   detail : string option;  (** human-readable failure reason, for the meta *)
 }
 
-(* PROVISIONAL: one artifact = one bundle-relative file, whole.  Chunked
-   upload is an additive change when a file outgrows a message. *)
+(* PROVISIONAL: one artifact = one bundle-relative file, whole. *)
 type artifact = { path : string; content : string }
 
-(* Every function is called BY the agent ON the server (§6.4: the agent dials
-   out).  No auth argument: the transport binds the capability to a machine,
-   exactly as API A binds one to a login. *)
+(* Called by the agent on the server.  No auth argument: the transport binds
+   the capability to a machine, as API A binds one to a login. *)
 module type EXECUTION_API = sig
   val claim : unit -> (assignment option, error) result
-  (** "give me work for this machine"; None = nothing queued.  Claiming
-      creates an execution and starts its lease. *)
+  (** None = nothing queued.  Claiming creates an execution and starts its
+      lease. *)
 
   val heartbeat :
     execution_id -> execution_phase -> ([ `Continue | `Cancel ], error) result
   (** doubles as the control channel: the reply tells the agent to keep going
-      or to abort -- how cancellation reaches a machine the server cannot
-      connect to *)
+      or to abort *)
 
   val post_events : execution_id -> event list -> (unit, error) result
   val upload : execution_id -> artifact -> (unit, error) result
@@ -411,7 +376,7 @@ module type EXECUTION_API = sig
   val report_caches : cache_entry list -> (unit, error) result
 end
 
-(* --- the signature (§5.2) ------------------------------------------------- *)
+(* --- the signature ---------------------------------------------------------- *)
 
 module type REQUEST_API = sig
   val submit : auth -> submit -> (submit_outcome, error) result
@@ -419,11 +384,11 @@ module type REQUEST_API = sig
   val events : auth -> run_id:string -> since:int -> (event list, error) result
   val cancel : auth -> run_id:string -> (unit, error) result (* owner or admin *)
   val list : auth -> filter -> page -> (meta list, error) result
-  val help : unit -> string (* the generated /bench reference, markdown *)
-  val vocab : unit -> vocab (* machines, tags, sweepable params *)
+  val help : unit -> string
+  val vocab : unit -> vocab
 
   (* admin only *)
-  val versions : auth -> (versions, error) result (* what the service pins *)
+  val versions : auth -> (versions, error) result
   val machines : auth -> (machine_status list, error) result
   val drain : auth -> machine:string -> (unit, error) result
   val undrain : auth -> machine:string -> (unit, error) result
@@ -432,9 +397,8 @@ module type REQUEST_API = sig
 
   val bump :
     auth -> component:component -> ?to_:string -> unit -> (pin, error) result
-  (* adopt a new version: bare bump re-resolves [track]; [to_] pins a
-     ref/tag/sha.  Validated before adoption; queued specs are untouched
-     (they snapshot pins at submission). *)
+  (* bare bump re-resolves [track]; [to_] pins a ref/tag/sha.  Queued specs
+     snapshot pins at submission and are untouched. *)
 end
 
 (* --- string forms ---------------------------------------------------------- *)
@@ -510,9 +474,8 @@ let execution_outcome_of_string = function
 
 (* --- JSON encodings -------------------------------------------------------- *)
 
-(* Hand-rolled, like the rest of the repo: the only dependency is yojson.
-   Clients must ignore unknown fields (additive versioning, §5.3.1), so
-   encoders may gain fields without notice; the shapes here are v1. *)
+(* Hand-rolled on yojson.  Clients must ignore unknown fields (additive
+   versioning), so encoders may gain fields without notice. *)
 
 let str s = `String s
 let opt_str = function None -> `Null | Some s -> `String s
@@ -536,8 +499,7 @@ let error_code_of_string = function
   | "internal" -> Some Internal
   | _ -> None
 
-(* origin round-trips: it is built by a requester and decoded by the transport
-   adapter on the server side. *)
+(* origin round-trips: built by a requester, decoded by the transport adapter. *)
 let json_of_origin (o : origin) =
   let kind, pr =
     match o.kind with
@@ -720,9 +682,8 @@ let json_of_vocab (v : vocab) =
       ("max_invocations", `Int v.max_invocations);
     ]
 
-(* meta round-trips: the server's queue is meta.json files (§8's index record),
-   so it must read back what it wrote.  Reading is lenient about unknown
-   fields, per the additive-versioning rule. *)
+(* meta round-trips: the queue is meta.json files.  Reading is lenient about
+   unknown fields. *)
 let json_member k = function
   | `Assoc kvs -> ( match List.assoc_opt k kvs with Some v -> v | None -> `Null)
   | _ -> `Null
@@ -889,7 +850,7 @@ let json_of_meta (m : meta) =
       ("links", json_of_links m.links);
     ]
 
-(* --- API B encodings (§6.2) ------------------------------------------------ *)
+(* --- API B encodings -------------------------------------------------------- *)
 
 let json_of_provenance (p : provenance) =
   `Assoc
@@ -1024,10 +985,9 @@ let execution_result_of_json j =
         detail = json_str (json_member "detail" j);
       }
 
-(* Wire shape for post_events: the agent sends [{seq, ts, body}]; run_id and
-   execution come from the AUTHENTICATED execution id, never from the payload
-   (the bench machine is treated as compromisable -- it must not be able to
-   write into another run's stream). *)
+(* Wire shape for post_events: [{seq, ts, body}].  run_id and execution come
+   from the authenticated execution id, never the payload: a compromised bench
+   machine must not write into another run's stream. *)
 let event_of_wire ~(id : execution_id) j =
   match (json_member "seq" j, json_str (json_member "ts" j)) with
   | `Int seq, Some ts ->
