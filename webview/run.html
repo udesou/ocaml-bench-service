@@ -1,12 +1,7 @@
 <!doctype html>
-<!-- The per-run page (§10): one static file over the run's own bundle.
-
-     Served from <state>/webview/ next to index.html; the run id rides in the
-     fragment (run.html#run-20260828-004).  Everything it shows is fetched
-     from the bundle the agent uploaded (runs/<id>/, symlinked into the
-     webview root by scripts/webview.sh) plus the per-run dashboard build
-     under dashboards/<id>/ when the builder has produced one.  While the run
-     is active the page polls, like the index. -->
+<!-- The per-run page: one static file over the run's own bundle (runs/<id>/,
+     symlinked into the webview root by scripts/webview.sh) plus the dashboard
+     build under dashboards/<id>/.  The run id rides in the fragment. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">

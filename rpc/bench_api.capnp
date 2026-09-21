@@ -1,15 +1,10 @@
 @0xc266ded9330dea06;
 
-# API A over Cap'n Proto (Q15): one method per REQUEST_API function.
-#
-# Identity is the capability: a BenchApi reference is bound server-side to one
-# GitHub login, so no method carries auth.  The role (user/admin) is derived
-# from the server's config per call, never asserted by the client.
-#
-# v1 wire encoding: record payloads travel as the API A JSON encodings
-# (lib/api.ml), one JSON document per Text field.  The capability model is
-# capnp's; promoting payloads to capnp structs is an additive change later.
-# Errors are the API A error envelope, JSON-encoded in the exception reason.
+# API A over Cap'n Proto: one method per REQUEST_API function.  Identity is the
+# capability (bound server-side to one login), so no method carries auth; the
+# role is derived from the server's config per call.  Record payloads travel as
+# the API A JSON encodings (lib/api.ml), one document per Text field; errors are
+# the API A error envelope, JSON-encoded in the exception reason.
 
 interface BenchApi {
   submit   @0 (command :Text, originJson :Text) -> (outcomeJson :Text);
@@ -40,14 +35,12 @@ interface BenchBot {
   submitAs @0 (login :Text, command :Text, originJson :Text) -> (outcomeJson :Text);
 }
 
-# API B (§6.2), held by one bench machine's agent: the capability IS the
-# machine, so no method carries an identity.  The agent dials out (§6.4);
-# every method here is called by the agent on the server.
+# API B, held by one bench machine's agent: the capability is the machine, so no
+# method carries an identity.  Every method is called by the agent on the server.
 interface AgentApi {
   # assignmentJson "" = nothing queued; poll again later
   claim        @0 () -> (assignmentJson :Text);
-  # order: "continue" | "cancel" -- the control channel for a machine the
-  # server cannot connect to
+  # order: "continue" | "cancel", the control channel
   heartbeat    @1 (runId :Text, execution :Int32, phase :Text) -> (order :Text);
   # eventsJson: JSON list of {seq, ts, body}; runId/execution are taken from
   # the authenticated arguments, never from the payload

@@ -1,24 +1,7 @@
-(* Turning what the user wrote into pinned runtimes.
-
-   The full resolver is the server's one GitHub dependency: PR head, merge
-   base, ref -> sha.  This module is the seam it plugs into, plus the OFFLINE
-   rules that need no network at all: release versions and commit shas pass
-   through, anything else is refused with instructions rather than guessed at.
-   Swapping in the GitHub-backed resolver must not touch the server.
-
-   Offline semantics of `vs=`, CLI submissions only:
-
-   * the FIRST entry is the baseline, the rest are candidates -- there is no
-     merge base to default to without a PR;
-   * `5.4.1`-shaped entries become `version:` pins (running-ng builds the
-     release tag); >= 7 hex characters become `commit:` pins;
-   * a ref like `trunk` is refused: two runs labelled "trunk" must be the same
-     commit or they are not comparable, and only the GitHub resolver can make
-     that guarantee.
-
-   PR-comment submissions always need GitHub (the candidate is the PR head,
-   the default baseline its merge base), so the offline resolver refuses them
-   whole. *)
+(* Turning what the user wrote into pinned runtimes.  The offline resolver
+   passes release versions and commit shas through and refuses everything else
+   (refs, PR-comment submissions) with instructions; for CLI `vs=` the first
+   entry is the baseline.  The GitHub-backed one plugs into the same seam. *)
 
 type t = {
   variants :
@@ -70,13 +53,10 @@ let offline_variant entry =
 
 let ( let* ) = Result.bind
 
-(* `5.5.0+fp+flambda`: a vs= entry is a compiler spec plus build flavors.
-   Parsed HERE, once for every resolver, so the compiler part travels on to
-   version/sha/ref resolution unchanged.  The TABLE is policy and comes from
-   the service config (Variant.default_flavors when it says nothing); the
-   flavors become configure_args and a name suffix in the table's canonical
-   order, so `+flambda+fp` and `+fp+flambda` are the same build with the
-   same runtime name. *)
+(* `5.5.0+fp+flambda`: a vs= entry is a compiler spec plus build flavors, parsed
+   here once for every resolver.  The flavor table is service config; flavors
+   become configure_args and a name suffix in the table's canonical order, so
+   `+flambda+fp` and `+fp+flambda` are the same runtime name. *)
 let split_flavors ~flavors entry =
   match Util.split_on ~sep:'+' entry with
   | [] | [ _ ] -> Ok (entry, None)
@@ -134,26 +114,21 @@ let offline = offline_with ~flavors:Variant.default_flavors
 
 (* --- the GitHub-backed resolver -------------------------------------------- *)
 
-(* The server's whole GitHub dependency, and it is only `git`: refs, release
-   tags and PR heads resolve with `ls-remote` (GitHub advertises
-   refs/pull/N/head), and the merge-base baseline is computed in a local bare
-   cache repo the resolver fetches into.  No API, no token -- public repos
-   only, which is what this service measures.
-
-   Names follow the document's example (`ocaml-pr-14796-e5f6a7b`): the label
-   says what the user meant, the sha pins it, and the runtime name -- the
-   compiler cache key -- carries both. *)
+(* The server's whole GitHub dependency is `git`: refs, release tags and PR
+   heads resolve with `ls-remote` (GitHub advertises refs/pull/N/head) and the
+   merge base is computed in a local bare cache repo.  No API, no token: public
+   repos only. *)
 
 type github = {
-  git : string;  (** the git binary *)
+  git : string;
   compiler_repo : string;  (** clone URL that `vs=` entries resolve against *)
   url_of_repo : string -> string;
       (** pr_context.repo ("owner/name") -> clone URL; overridable in tests *)
   cache_dir : string;  (** bare repo used only for merge-base computation *)
   default_base : string;  (** branch a PR targets when the bot did not say *)
   flavors : (string * string) list;
-      (** the build-flavor table (name -> configure args), from the service
-          config; order is canonical *)
+      (** build-flavor table (name -> configure args) from the service config;
+          order is canonical *)
 }
 
 let github_defaults ~cache_dir =
@@ -183,11 +158,9 @@ let git_run ~git args =
 
 let run_git (g : github) args = git_run ~git:g.git args
 
-(* Pinning a LOCAL checkout: sources carry shas, never refs (§6.1 --
-   everything resolved before dispatch), and the server resolves them from
-   the checkouts it already reads for facts and validation, so no network is
-   involved.  The clone URL comes from the checkout's own origin remote (the
-   directory path stands in for dev checkouts without one). *)
+(* Pinning a local checkout: sources carry shas, never refs, resolved from the
+   checkouts the server already reads, so no network.  The clone URL is the
+   checkout's origin remote (the directory path when there is none). *)
 let local_source ?(git = "git") ~name ~dir ~ref_ () =
   match git_run ~git [ "-C"; dir; "rev-parse"; ref_ ] with
   | Error out ->
@@ -202,10 +175,9 @@ let local_source ?(git = "git") ~name ~dir ~ref_ () =
     in
     Ok (Runspec.source ~name ~repo ~commit ())
 
-(* `git ls-remote <url> <ref>`: the sha in the first column, or None when the
-   remote has no such ref.  A FAILURE (unreachable url, garbage output) is the
-   SERVICE's problem, not the request's: git's stderr goes to the server log,
-   the requester gets the incident id. *)
+(* `git ls-remote <url> <ref>`: the sha, or None when the remote has no such
+   ref.  A failure (unreachable url, garbage output) is the service's problem:
+   git's stderr goes to the server log, the requester gets the incident id. *)
 let ls_remote g ~url ~ref_ =
   match run_git g [ "ls-remote"; url; ref_ ] with
   | Error out ->
@@ -284,9 +256,8 @@ let ensure_cache g =
           (Printf.sprintf "git init --bare %s failed: %s" g.cache_dir out)
         "The service could not prepare its git cache."
 
-(* The merge-base baseline: fetch the PR head and the base branch into the
-   cache, then ask git.  This is the one place that needs commit OBJECTS
-   rather than just ref tips. *)
+(* The merge-base baseline: fetch the PR head and base branch into the cache,
+   then ask git.  The one place that needs commit objects, not just ref tips. *)
 let merge_base g ~url ~number ~base_ref ~head_sha =
   let* () = ensure_cache g in
   let gd = "--git-dir=" ^ g.cache_dir in

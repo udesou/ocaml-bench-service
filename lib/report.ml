@@ -1,26 +1,7 @@
-(* The report renderer: contract artifacts -> report.md.
-
-   Pure: manifest + measurement lines in, markdown out.  Rendered by the
-   SERVER at finish (the agent uploads the contract, the server owns the
-   prose), written into the bundle as report.md and embedded verbatim in the
-   completion comment.
-
-   The verdict policy, agreed 2026-08-31: the three headline metrics are
-   reported INDIVIDUALLY, never composed into one verdict -- no metric is
-   authoritative (fp changes can regress instructions while wall barely
-   moves; RSS can step for allocator reasons).  Each column uses the
-   dashboard's shared vocabulary (delta of per-benchmark MEDIANS across
-   invocations; warn at +-warn_pct, significant at +-significant_pct), plus
-   two honesty gates:
-
-   * wall_time: below wall_min_invocations, deltas are shown but never
-     receive a verdict mark -- one invocation of a noisy metric is weather,
-     not climate;
-   * max_rss: a verdict needs the percentage band AND an absolute move of at
-     least rss_floor_kib -- percent of a small heap shouts too easily.
-
-   Thresholds live in service.json ("report": {...}) and are PROVISIONAL
-   until Q12's repeat-run noise data. *)
+(* Contract artifacts -> report.md, rendered by the server at finish.  Each
+   headline metric gets its own verdict, never a composed one; wall_time below
+   wall_min_invocations gets no mark and max_rss also needs an absolute move of
+   rss_floor_kib.  Thresholds live in service.json ("report"). *)
 
 type thresholds = {
   warn_pct : float;
@@ -36,8 +17,6 @@ let default_thresholds =
     wall_min_invocations = 3;
     rss_floor_kib = 1024.0;
   }
-
-(* --- contract parsing -------------------------------------------------------- *)
 
 let member k = function
   | `Assoc kvs -> ( match List.assoc_opt k kvs with Some v -> v | None -> `Null)
@@ -111,8 +90,6 @@ let median = function
       (if n mod 2 = 1 then nth (n / 2)
        else (nth ((n / 2) - 1) +. nth (n / 2)) /. 2.0)
 
-(* --- verdicts ---------------------------------------------------------------- *)
-
 type mark = Regression | Improvement | Warn | Neutral | Ungated
 
 let mark_of ~(t : thresholds) delta_pct =
@@ -127,8 +104,6 @@ let icon = function
   | Warn -> " \xe2\x9a\xa0" (* warning sign *)
   | Neutral | Ungated -> ""
 
-(* --- rendering --------------------------------------------------------------- *)
-
 let headline_metrics = [ ("wall_time", "wall"); ("instructions", "instructions"); ("max_rss", "max RSS") ]
 
 let pct = Printf.sprintf "%+.1f%%"
@@ -140,9 +115,9 @@ let humane v =
   else if Float.abs v >= 1e4 then Printf.sprintf "%.0f" v
   else Printf.sprintf "%.2f" v
 
-(* Render the report BODY (no title: report.md gets one, the completion
-   comment supplies its own header).  [olly] and [perf] are the raw ndjson
-   file contents; either may be missing. *)
+(* Render the report body (no title: report.md and the completion comment
+   supply their own).  [olly] and [perf] are raw ndjson contents; either may
+   be missing. *)
 let render ?(thresholds = default_thresholds) ~manifest ~olly ~perf ~baseline
     ~candidates () =
   let t = thresholds in

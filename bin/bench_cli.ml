@@ -1,22 +1,7 @@
-(* bench-cli -- the thin client of API A, over Cap'n Proto.
-
-     submit "<command>"   send a /bench command; prints the acknowledgement
-     status <run-id>      one run's state
-     list                 the runs index (newest first)
-     cancel <run-id>      cancel a queued run (owner or admin)
-     help                 the /bench reference, served by the server
-     vocab                machines, families, tags, sweepable params
-     machines | drain <m> | undrain <m> | requeue <id> | evict <m>   (admin)
-
-   Thin means thin: this binary parses NOTHING of the /bench grammar and
-   renders NOTHING itself -- it sends the raw command and prints whatever
-   markdown comes back (Q13: the grammar lives in the server; there is no
-   offline mode).
-
-   Identity is the capability file (--cap, or $BENCH_CAP): whoever holds
-   <login>.cap is that login; there is no --login.  The one exception is the
-   PR bot, which holds bot.cap and passes --as-login with the commenter it
-   verified via GitHub, plus the --pr-* context from the webhook. *)
+(* bench-cli: the thin client of API A over Cap'n Proto.  It parses nothing of
+   the /bench grammar and renders nothing; it sends the raw command and prints
+   the markdown that comes back.  Identity is the capability file (--cap or
+   $BENCH_CAP); only the PR bot (bot.cap) passes --as-login and --pr-* context. *)
 
 open Bench_service
 open Bench_rpc
@@ -149,8 +134,8 @@ let origin o =
     die "--pr-* flags are bot mode; they need --as-login (and bot.cap)"
 
 (* Exit codes are the bot's contract: 0 = outcome printed, 1 = the server
-   REFUSED (postable markdown on stdout), 2 = CLI usage error, 3 = could not
-   reach the server at all -- the caller should log and retry, never post. *)
+   refused (postable markdown on stdout), 2 = CLI usage error, 3 = could not
+   reach the server; the caller should log and retry, never post. *)
 let with_cap o f =
   let cap_file =
     match o.cap with

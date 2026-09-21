@@ -1,24 +1,8 @@
-(* The run key: the content identity of a measurement (§8.1, decided as Q16).
-
-   A request whose run key matches a *completed* stored run is answered from
-   the store (the [Reused] outcome of submit); `rerun` forces fresh
-   measurements.  The key hashes everything that could change the numbers, so
-   reuse is rarer than it could be but never misleading:
-
-   * running-ng enters as X.Y of its version -- Z-only releases promise not to
-     change results (a release discipline running-ng adopts with this design).
-   * The environment is part of the key (machine name AND fingerprint): a
-     kernel update changes numbers, so results from before it never answer a
-     request from after it.
-
-   The server computes the key at submission, once every ref is resolved to a
-   sha and the machine's fingerprint is known.  bench-gen cannot (it resolves
-   nothing and has no machine), which is why a CLI-generated run spec carries
-   `run_key: null`.
-
-   The canonical encoding mirrors the contract's config_id recipe: a
-   delimiter-joined string, not JSON, so any conforming producer computes the
-   same digest.  Like config_id, this is identity, not a security boundary. *)
+(* The run key: the content identity of a measurement.  A request whose key
+   matches a completed stored run is answered from the store, so the key hashes
+   everything that could change the numbers (running-ng X.Y, machine name and
+   fingerprint).  The encoding mirrors the contract's config_id recipe: a
+   delimiter-joined string, so any producer computes the same digest. *)
 
 type runtime = {
   name : string;  (** the running-ng runtime name (encodes the sha) *)
@@ -27,9 +11,9 @@ type runtime = {
 }
 
 type t = {
-  runtimes : runtime list;  (** every compiler: baseline and candidates *)
+  runtimes : runtime list;
   family : Api.family;
-  tags : string list;  (** the resolved running-ng tags (union) *)
+  tags : string list;  (** resolved running-ng tags (union) *)
   invocations : int;
   sweeps : (string * string list) list;
   benches_commit : string;  (** macro-benches (or benches) sha *)
@@ -40,8 +24,7 @@ type t = {
   env_fingerprint : string;  (** digest of kernel, CPU model, governor *)
 }
 
-(* "vX.Y.Z" | "X.Y.Z" | "X.Y" -> "X.Y".  Anything that does not look like a
-   version is kept whole rather than guessed at. *)
+(* "vX.Y.Z" | "X.Y.Z" | "X.Y" -> "X.Y"; anything else is kept whole. *)
 let version_xy v =
   let v' =
     if String.length v > 0 && (v.[0] = 'v' || v.[0] = 'V') then

@@ -1,32 +1,8 @@
-(* The run spec: the complete, serialised description of one benchmark run.
-
-   The interface between the request server and the bench agent: the server
-   produces it at submission; the agent executes it; a copy is archived next
-   to the results as the run's provenance record (§6.1).  docs/RUNSPEC.md is
-   the normative prose -- keep the two in step.
-
-   The spec describes only WHAT to measure, and everything in it is resolved
-   before dispatch -- every source and runtime carries a sha, never a ref --
-   so it is executable and archivable as-is.  Deliberately ABSENT, because
-   they are the agent's concern derived from its own configuration plus this
-   spec: machine-side paths (checkout dirs, log dir, opam root), the process
-   environment (the agent sets RUNNING_TAG from `selection.tags`), the
-   command line, and any transport or credential.  Execution-scoped
-   directives -- cache bypass for `rerun`, the timeout -- travel in the §6.2
-   assignment at claim time, never in the spec.
-
-   The service has never shipped, so this aligned shape IS version 1.  It
-   carries the decided points: no ssh anywhere (Q1), `invocations` (Q17),
-   `family` (§5.3), `run_key` (Q16, null until the server has agent-reported
-   machine facts to hash), and baseline/candidates split as in §5.3's
-   `resolved`, because which side is the baseline decides the sign of every
-   delta.
-
-   The macro-benches commit is in `sources` because it is part of the run's
-   identity: benchmark binaries are cached as `<benchmark>-<runtime>` and the
-   runtime name encodes only the COMPILER sha, so a benchmark-source change
-   does not invalidate a cached binary -- without the pin, a run silently
-   measures old benchmark code against a new compiler. *)
+(* The run spec: the complete, serialised description of one benchmark run,
+   produced by the server at submission, executed by the agent and archived
+   beside the results.  docs/RUNSPEC.md is the normative prose; keep the two in
+   step.  Everything is resolved before dispatch (shas, never refs); machine-side
+   paths, environment and command line are the agent's and absent here. *)
 
 let version = "1"
 
@@ -38,22 +14,18 @@ type source = {
 
 let source ~name ~repo ~commit () = { name; repo; commit }
 
-(* The config travels machine-independent (§6.1): its `includes:` line names
-   the base config under this placeholder, and the AGENT substitutes its own
-   running-ng checkout path when it materializes the file.  The md5 in the
-   spec is of the contents as transported, placeholder included. *)
+(* The config travels machine-independent: its `includes:` line names the base
+   config under this placeholder and the agent substitutes its own running-ng
+   path.  The md5 is of the contents as transported, placeholder included. *)
 let running_ng_root_var = "${RUNNING_NG_ROOT}"
 
 let base_include_placeholder =
   running_ng_root_var ^ "/src/running/config/base/ocaml/macro_base.yml"
 
-(* The execution timeout the assignment carries: a safety net against wedged
-   runs, not a scheduler.  DISABLED BY DEFAULT (multiplier 0 -> timeout 0 ->
-   the agent enforces no deadline): the formula's inputs are guesses until a
-   machine has an established result set -- cell_seconds is calibrated per
-   deployment and cold compiler builds are excluded from the estimate -- and
-   a wedged run is still killable via cancel.  Opting in is service.json
-   `timeout` policy: max(floor_seconds, multiplier * estimate). *)
+(* The execution timeout: a safety net against wedged runs, not a scheduler.
+   Disabled by default (multiplier 0 -> timeout 0) because the formula's inputs
+   are guesses until a machine has an established result set; opt in with
+   service.json `timeout`: max(floor_seconds, multiplier * estimate). *)
 type timeout_policy = { floor_seconds : int; multiplier : float }
 
 let default_timeout = { floor_seconds = 90 * 60; multiplier = 0.0 }
@@ -70,10 +42,9 @@ let timeout_seconds ~(cost : Cost.t) =
 let str s = `String s
 let opt_str = function None -> `Null | Some s -> `String s
 
-(* The §5.3 runtime_pin, with one deviation raised on the document: a released
-   compiler (vs=5.4.1) is provisioned by running-ng's `version:` field, which a
-   commit-only pin cannot express, so bench-gen's OFFLINE path keeps the
-   version spelling; server-resolved pins always carry the sha. *)
+(* The runtime_pin, with one deviation: a released compiler (vs=5.4.1) is
+   provisioned by running-ng's `version:` field, so bench-gen's offline path
+   keeps the version spelling; server-resolved pins always carry the sha. *)
 let json_of_pin (v : Variant.t) =
   `Assoc
     ((("name", str (Variant.runtime_name v))
@@ -120,9 +91,8 @@ let to_json ~(ctx : Gen.context) ~(request : Request.t) ~(spec : Gen.t)
       ( "selection",
         `Assoc
           [
-            (* Several tags select their union (running-ng's comma-separated
-               RUNNING_TAG, which the AGENT sets from this field);
-               `requested` keeps the spelling the user typed. *)
+            (* Several tags select their union (the agent sets RUNNING_TAG from this
+               field); `requested` keeps the spelling the user typed. *)
             ( "tags",
               `List
                 (List.map
@@ -144,9 +114,8 @@ let to_json ~(ctx : Gen.context) ~(request : Request.t) ~(spec : Gen.t)
         `Assoc
           [
             ("filename", str (ctx.Gen.request_id ^ ".yml"));
-            (* MD5 only to detect drift between the spec and a config on disk;
-               nothing here is a security boundary.  Same digest the contract
-               uses for config_id. *)
+            (* MD5 only to detect drift between the spec and a config on disk; same
+               digest the contract uses for config_id. *)
             ("md5", str (Digest.to_hex (Digest.string spec.Gen.config_yaml)));
             ("contents", str spec.Gen.config_yaml);
           ] );

@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Run the request server with one deployment's settings.
+# Run the request server with one deployment's settings:
 #
 #   scripts/serve.sh [server.env]
 #
-# Everything machine-specific lives in the env file, so moving the service to
-# a different host is: copy the state dir (it holds the queue AND the server's
-# secret key, i.e. its identity), run this script there.  If
-# BENCH_PUBLIC_ADDRESS is a DNS name that moves with the service, the
-# capability files people already hold stay valid -- nothing to redistribute.
+# Everything machine-specific lives in the env file.  The state dir holds the
+# queue and the server's secret key (its identity), so moving hosts is copying
+# it; a DNS BENCH_PUBLIC_ADDRESS keeps issued capability files valid.
 
 set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
@@ -23,11 +21,9 @@ ENV_FILE="${1:-$ROOT/server.env}"
 : "${BENCH_SERVICE_CONFIG:=$ROOT/service.json}"
 : "${BENCH_RESOLVER:=github}"                        # offline for hermetic use
 : "${BENCH_BASE_URL:=http://localhost}"              # links in acknowledgements
-# The server's OWN clones, under its state dir (scripts/server-setup.sh
-# creates them).  Not $HOME/<repo>: that is where a person develops these
-# repos, and on a host with a double role it is also where the bench agent
-# would look.  Pointing these at a working checkout is an explicit choice --
-# the server fetches into them and extracts trees out of them.
+# The server's own clones, under its state dir (scripts/server-setup.sh creates
+# them).  Pointing these at a working checkout is an explicit choice: the
+# server fetches into them and extracts trees out of them.
 : "${BENCH_GIT_DIR:=$BENCH_STATE_DIR/git}"
 : "${RUNNING_NG_REPO:=$BENCH_GIT_DIR/running-ng}"
 : "${RUNNING_NG_REF:=origin/adding-ocaml-support}"
@@ -41,10 +37,8 @@ ENV_FILE="${1:-$ROOT/server.env}"
 
 mkdir -p "$BENCH_STATE_DIR"
 
-# Versions are the daemon's business now: on first start it seeds
-# <state>/pins.json from these checkouts and their tracked refs; afterwards
-# pins change only through the admin `bump` operation (the daemon extracts
-# running-ng's config+python from its own pin at startup).
+# pins.json is seeded from these checkouts on first start; afterwards pins
+# change only through the admin `bump` operation.
 
 args=(
   --service-config "$BENCH_SERVICE_CONFIG"

@@ -1,21 +1,14 @@
 #!/usr/bin/env bash
-# Publish the webview (index, per-run pages, dashboards) AND the run bundles
-# to a GitHub Pages repo -- the git-backed store proof of concept (Q2's
-# lean: git for the small canonical artifacts, pkgeval-reports style).
+# Publish the webview (index, per-run pages, dashboards) and the run bundles to
+# a GitHub Pages repo: rsync the webview root into a checkout, commit when
+# anything changed, push.  The LAN webview stays the live view (Pages lags a
+# CDN cache by minutes); this is the shareable, durable face PR comments link.
 #
-#   scripts/publish_pages.sh [interval-seconds]     # loop (a screen window)
+#   scripts/publish_pages.sh [interval-seconds]     # loop
 #   scripts/publish_pages.sh once                   # single sync, then exit
 #
-# A poller like the others: rsync the webview root (which already contains
-# everything -- runs/ is the symlinked bundle store, dashboards/ the built
-# sites) into a checkout of the pages repo, commit when anything changed,
-# push.  Nothing else in the service knows this exists: the LAN webview
-# stays the live view (Pages lags a CDN cache by minutes), this is the
-# shareable, durable face that PR comments can link.
-#
-# Requirements: gh auth (push credentials), the repo existing with Pages
-# enabled on main.  Set BENCH_BASE_URL to the Pages URL in server.env if
-# acknowledgement links should point here rather than at the LAN webview.
+# Requires gh auth and the repo with Pages enabled on main.  Set BENCH_BASE_URL
+# to the Pages URL in server.env for acknowledgement links to point here.
 #
 # Env: BENCH_STATE_DIR   (default ~/.ocaml-bench-service)
 #      BENCH_PAGES_REPO  owner/name; empty disables publishing
@@ -39,26 +32,17 @@ fi
 sync_once() {
   git -C "$DIR" pull --quiet --ff-only || true
   # --copy-links dereferences the webview's runs -> ../runs symlink, so the
-  # bundles are real files in the repo (the git-backed store).
+  # bundles are real files in the repo.
   rsync -a --delete --copy-links --exclude .git --exclude README.md \
     "$STATE/webview/" "$DIR/"
-  # Without this, Pages' Jekyll pass silently drops the dashboard assets
-  # (everything under _observablehq/).
+  # Without .nojekyll, Pages' Jekyll pass silently drops everything under
+  # _observablehq/.
   touch "$DIR/.nojekyll"
-  # Two post-rsync passes over the PUBLISHED copy only; the store itself stays
-  # free of both.  They run in this order because the second reports file sizes
-  # and so must see what the first leaves behind.
-  #
-  # 1. Drop execution.json's last_heartbeat_epoch.  It moves on every heartbeat,
-  #    which made this loop commit every ~30s for the whole of a run -- 5,752
-  #    commits across one 48h sweep, each one a single changed line, each firing
-  #    a pages-build-deployment.  Nothing published reads it: it is the server's
-  #    own lease bookkeeping (server.ml, `now - last_heartbeat > lease_seconds`),
-  #    and a reader wanting liveness has runs.json's state and events.ndjson,
-  #    both of which move only when something real happens.
-  # 2. Pages has no directory listing, so the run pages' "bundle" links would
-  #    404: give each published bundle a generated index.html (deterministic, so
-  #    an unchanged bundle produces no git diff).
+  # Two passes over the published copy only, in this order (the second reports
+  # file sizes).  1. Drop execution.json's last_heartbeat_epoch: it moves on
+  # every heartbeat and made this loop commit every ~30s (5,752 commits in one
+  # 48h sweep); nothing published reads it.  2. Pages has no directory listing,
+  # so give each bundle a deterministic index.html.
   python3 - "$DIR" <<'PYEOF'
 import os, sys, html, json
 runs = os.path.join(sys.argv[1], "runs")

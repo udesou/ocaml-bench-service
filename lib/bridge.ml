@@ -1,8 +1,5 @@
-(* Calling scripts/rng_helper.py.
-
-   The bridge is the only place the service touches python.  It is kept out of
-   Gen so that config generation stays pure and testable; only the CLI and the
-   one "live" test go through here. *)
+(* Calling scripts/rng_helper.py: the only place the service touches python,
+   kept out of Gen so generation stays pure. *)
 
 type config = { python : string; helper : string; running_ng_src : string option }
 
@@ -60,9 +57,8 @@ let facts cfg ~config =
   | Error e -> Error e
   | Ok out -> Facts.of_json_string out
 
-(* validate() + validate_tags().  Returns the bulleted rule breaches, which are
-   the exact strings running-ng would have printed -- we do not paraphrase them,
-   because the user needs to be able to grep for them in running-ng. *)
+(* validate() + validate_tags().  The rule breaches are the exact strings
+   running-ng prints, never paraphrased, so users can grep for them. *)
 let validate cfg ~config =
   match run cfg [ "validate"; "--config"; config ] with
   | Error e -> Error [ e ]
