@@ -1,26 +1,9 @@
 #!/usr/bin/env bash
-# One-time setup on a (new) BENCH machine -- the host bench-agent runs on.
-#
-# Installs nothing system-wide: it CHECKS the prerequisites and errors with
-# instructions.  For a truly bare machine, running-ng's own
-# install_deps_linux.sh is the installer for the heavy things (opam itself,
-# C libraries, perf); run it first, then this.
-#
-# What this script does:
-#   1. prerequisite checks (git, opam >= 2.2, python3 + PyYAML, make, rsync,
-#      setsid, capnp -- the last only to BUILD bench-agent from this repo)
-#   2. seeds the agent's PRIVATE clones under $BENCH_AGENT_STATE/git --
-#      the agent never touches anyone's personal checkouts.  A local donor
-#      checkout is preferred when present (hardlinked clone, fast, and the
-#      gitignored vendored trees are copied so the first run skips the big
-#      re-pull); a bare machine falls back to the canonical URLs.
-#   3. builds this repo's local switch (guarded: refuses while a benchmark
-#      is running, because `make switch` takes the opam root lock)
-#
-# What it deliberately does NOT do: macro-benches' `make setup` (vendoring).
-# The agent runs that itself, supervised and cancellable, on its first claim
-# and again whenever a bump moves the benches pin -- one code path for the
-# fresh machine and the bump.
+# One-time setup on a bench machine (the host bench-agent runs on).  Checks
+# prerequisites (running-ng's install_deps_linux.sh installs the heavy ones),
+# seeds the agent's private clones under $BENCH_AGENT_STATE/git, and builds
+# this repo's local switch.  macro-benches' `make setup` (vendoring) is left to
+# the agent, which runs it supervised on its first claim and after every bump.
 #
 # Environment:
 #   BENCH_AGENT_STATE      agent state dir (default ~/.bench-agent)
@@ -58,8 +41,7 @@ esac
 
 mkdir -p "$STATE/git"
 
-# Seed one clone: donor checkout if present, canonical URL otherwise.  The
-# clone's origin always ends up at the canonical remote so later fetches
+# The clone's origin always ends up at the canonical remote so later fetches
 # (bump adoption) reach upstream, not the donor.
 seed() {
   local name="$1" donor="$2" url="$3" dir="$STATE/git/$1"
@@ -83,10 +65,8 @@ seed macro-benches "${MACRO_BENCHES_DONOR:-$HOME/macro-benches}" \
 seed olly "${OLLY_DONOR:-$HOME/runtime_events_tools}" \
   https://github.com/tarides/runtime_events_tools
 
-# The monorepo's vendored trees are gitignored products of its `make setup`,
-# so a clone lacks them.  Copy them from the donor when it has them: the
-# agent's supervised `make setup` then only patches and test-builds instead
-# of re-pulling everything.
+# The vendored trees are gitignored products of `make setup`; copying them from
+# the donor lets the agent's supervised setup skip the big re-pull.
 DONOR="${MACRO_BENCHES_DONOR:-$HOME/macro-benches}"
 if [ -d "$DONOR/duniverse" ]; then
   for d in duniverse vendor _rocq_prefix; do

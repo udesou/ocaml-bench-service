@@ -1,30 +1,15 @@
-(* Parsing a `/bench` comment into a request.
-
-   Untrusted input from a PR comment, so every rejection produces a message good
-   enough to post back verbatim.
-
-   The grammar is deliberately small.  Tool selection (perf group, memtrace) and
-   explicit benchmark lists were cut from the prototype: perf_grp1 is always
-   attached, and the benchmark set is chosen with `tag=`.  Adding them back later
-   is additive -- taking them away once people use them would not be.
-
-   Vocabulary (Q17): the repetition key is `invocations=` -- how many times each
-   (benchmark, config) cell is run, each in a fresh process, mapping 1:1 onto
-   running-ng's `invocations:`.  "iterations" is not a word this service uses,
-   and the old spelling gets a pointer, not a guess.
-
-   This module resolves nothing: no refs to shas (no network), no idea which
-   tags exist (that is Facts), no cost decision (that is Cost), no idea who is
-   asking (roles are Authz's: `force=` and `priority=` parse here for everyone
-   and are refused for non-admins there).  Keeping it pure is what makes it
-   table-testable. *)
+(* Parsing a `/bench` comment into a request.  Untrusted input, so every
+   rejection is postable verbatim.  The repetition key is `invocations=`
+   (running-ng's `invocations:`); "iterations" gets a pointer, not a guess.
+   Pure: no resolution, no facts, no cost, no roles (`force=` and `priority=`
+   parse for everyone; Authz refuses them). *)
 
 type action =
   | Run
   | Cancel of string  (* the run id to cancel, from the acknowledgement *)
   | Continue of string
-      (* finish a terminal run's missing cells: a new execution of the SAME
-         run, resumed in place (running-ng --resume; failed builds retried) *)
+      (* finish a terminal run's missing cells: a new execution of the same run,
+         resumed in place *)
   | Rerun
   | Help
 
@@ -36,8 +21,8 @@ type t = {
   action : action;
   machine : string option;
   invocations : int option;
-  tags : string list;  (* [] = the default set; several names are a UNION,
-                          matching running-ng's apply_tag_filter *)
+  tags : string list;  (* [] = the default set; several names are a union, as in
+                          running-ng's apply_tag_filter *)
   vs : string list;
   sweeps : sweep list;
   family : Api.family;
@@ -53,8 +38,7 @@ let known_keys =
 let known_actions = [ "cancel"; "rerun"; "help" ]
 
 (* Three invocations of the 20 `default_run` programs on two runtimes is ~1 h on
-   the calibration machine -- enough repetition to see past noise, and inside
-   the 2 h cost cap. *)
+   the calibration machine, inside the 2 h cost cap. *)
 let default_invocations = 3
 
 (* A guard well below the cost cap so an obvious fat-finger (invocations=300) is
@@ -92,10 +76,9 @@ let command_line comment =
   in
   List.find_opt is_command (Util.split_on ~sep:'\n' comment)
 
-(* sweep=s:1,2;o:80,120 -- semicolons separate dimensions, commas separate
-   values.  Dimension keys may be the OCAMLRUNPARAM letter (`s`, `o`) or the
-   contract's canonical name (`minor_heap`); resolution happens in Gen against
-   vocab.json so the two stay in sync with the contract. *)
+(* sweep=s:1,2;o:80,120: semicolons separate dimensions, commas values.  Keys
+   may be the OCAMLRUNPARAM letter or the contract's canonical name; Gen
+   resolves them against vocab.json. *)
 let parse_sweep value =
   let parts = Util.split_on ~sep:';' value |> List.map Util.trim in
   let parts = List.filter (fun p -> p <> "") parts in
@@ -135,9 +118,8 @@ let parse comment =
         match Util.split_kv tok with
         | None -> (
           match String.lowercase_ascii tok with
-          (* Cancellation is by run id, which the acknowledgement comment
-             hands out: "my latest run" is ambiguous the moment two requests
-             share a PR, and a wrong guess cancels an hour of someone's work. *)
+          (* Cancellation is by run id: "my latest run" is ambiguous once two
+             requests share a PR, and a wrong guess cancels an hour of work. *)
           | "cancel" -> (
             match rest with
             | id :: rest' when Util.split_kv id = None ->
@@ -189,8 +171,7 @@ let parse comment =
                       n max_invocations
                   else go { req with invocations = Some n } rest
               (* The old spelling gets a pointer, not a "did you mean" guess:
-                 it is three edits from the real key, and everyone coming from
-                 the prototype will type it. *)
+                 everyone coming from the prototype will type it. *)
               | "iterations" ->
                 err
                   "`iterations=` is not a `/bench` key; use `invocations=%s` \
@@ -198,8 +179,8 @@ let parse comment =
                    process."
                   value
               | "tag" -> (
-                (* Several names are allowed and mean their UNION -- exactly
-                   running-ng's comma-separated RUNNING_TAG semantics. *)
+                (* Several names mean their union, as running-ng's comma-separated
+                   RUNNING_TAG. *)
                 let ts = Util.comma_list value in
                 let dup =
                   List.filter
@@ -217,8 +198,8 @@ let parse comment =
               | "family" -> (
                 match Api.family_of_string (String.lowercase_ascii value) with
                 | Some Api.Macro -> go { req with family = Api.Macro } rest
-                (* Reserved (§12): the field exists so micro can be added
-                   without breaking any interface, but nothing serves it yet. *)
+                (* Reserved: micro can be added without breaking any interface,
+                   but nothing serves it yet. *)
                 | Some Api.Micro ->
                   err
                     "`family=micro` is reserved but not yet supported; the \
@@ -261,9 +242,8 @@ let parse comment =
 let invocations_or_default t =
   match t.invocations with Some n -> n | None -> default_invocations
 
-(* The names the user actually typed (or the default they got), for messages:
-   echoing the resolved running-ng tags back at someone who typed an alias is
-   confusing when the two differ. *)
+(* The names the user typed (or the default), for messages: echoing resolved
+   tags at someone who typed an alias is confusing. *)
 let requested_tags t = match t.tags with [] -> [ "default" ] | ts -> ts
 
 (* The running-ng tags, after alias resolution.  A bare /bench is default_run. *)

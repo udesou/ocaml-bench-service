@@ -1,13 +1,6 @@
-(* Friendly tag names for the comment grammar.
-
-   running-ng's tags are `default_run`, `small_run`, `large_run`, `huge_run`,
-   `legacy`, `all_benches` plus ~16 runtime-feature tags.  A PR author should
-   type `tag=small`, so the grammar exposes short aliases and maps them here.
-
-   Unaliased names fall through unchanged, which keeps the feature tags
-   (`bigarrays`, `effects`, `io_uring`, ...) reachable for anyone who knows
-   they exist without putting them in the documented surface.  Validity is
-   still checked against the base config, so a fall-through typo is caught. *)
+(* Friendly tag names for the comment grammar (`tag=small` -> `small_run`).
+   Unaliased names fall through unchanged so the feature tags stay reachable;
+   validity is still checked against the base config. *)
 
 let aliases =
   [
@@ -31,9 +24,8 @@ let friendly tag =
   | Some (a, _) -> a
   | None -> tag
 
-(* The tag vocabulary in user-facing order: the documented aliases first, then
-   whatever tags the base config defines that they do not cover (the feature
-   tags: bigarrays, effects, ...).  Both spellings the grammar accepts. *)
+(* The tag vocabulary in user-facing order: documented aliases first, then the
+   base config's remaining tags (the feature tags). *)
 let vocabulary ~defined =
   let aliased = List.map resolve documented in
   documented @ List.filter (fun t -> not (List.mem t aliased)) defined

@@ -1,25 +1,12 @@
 #!/usr/bin/env bash
-# Build a per-run dashboard for every finished run that lacks one (§10).
+# Build a per-run dashboard for every finished run that lacks one: for each
+# done run with contract measurements, run `BENCH_RUN_DIR=<bundle> npm run
+# build` in the server's own dashboard checkout and publish dist/ under
+# <state>/webview/dashboards/<run_id>/.  A failed build leaves
+# dashboards/<run_id>.failed with the log and is not retried until that file is
+# removed.
 #
 #   scripts/dashboard_builder.sh [interval-seconds]
-#
-# A foreground poller like the bot: scans the webview's runs.json, and for
-# each run that is done, has contract measurements, and has no dashboard yet,
-# runs the ocaml-bench-dashboard build (BENCH_RUN_DIR=<bundle> npm run build,
-# a fully static site with relative asset paths) and publishes dist/ under
-# <state>/webview/dashboards/<run_id>/.  The per-run page links it as soon as
-# it exists.
-#
-# A failed build leaves dashboards/<run_id>.failed with the log and is not
-# retried until that file is removed -- a broken run must not wedge the
-# builder in a loop.
-#
-# It builds in the SERVER'S OWN dashboard checkout (<state>/git/...), which
-# scripts/server-setup.sh creates and prepares.  `npm run build` writes dist/
-# in whatever checkout it is pointed at, so aiming this at a developer's
-# working copy would have the service clobbering (and be clobbered by) their
-# builds.  The dashboard PIN (bump) deciding when existing dashboards are
-# rebuilt is future work, so the pin commit is recorded next to each build.
 #
 # Env: BENCH_STATE_DIR (default ~/.ocaml-bench-service)
 #      BENCH_GIT_DIR   (default <state>/git)
@@ -38,12 +25,9 @@ command -v python3 >/dev/null || { echo "dashboards: python3 not installed"; exi
   || { echo "dashboards: $REPO has no node_modules (run scripts/server-setup.sh)"; exit 1; }
 [ -x "$REPO/bin/ingest" ] \
   || { echo "dashboards: $REPO/bin/ingest missing (run scripts/server-setup.sh)"; exit 1; }
-# bin/ingest is a build product of a gitignored directory, so an updated
-# checkout still carries the binary built from the OLD contract.  That one
-# rejects manifests the current producer emits, and every build here then fails
-# with "Unable to load measurements.json", a message naming a file that is fine,
-# logged once per run into dashboards/<run_id>.failed.  Refuse up front instead,
-# and say what is actually wrong.
+# A bin/ingest older than the checkout rejects current manifests and every build
+# fails with "Unable to load measurements.json"; refuse up front and say what is
+# wrong.
 [ -z "$(find "$REPO/lib" "$REPO/ingest" "$REPO/dune-project" \
           -newer "$REPO/bin/ingest" -print -quit 2>/dev/null)" ] \
   || { echo "dashboards: $REPO/bin/ingest is older than the checkout it validates" \
@@ -70,7 +54,7 @@ EOF
 while true; do
   for run in $(done_runs); do
     bundle="$STATE/runs/$run"
-    [ -f "$bundle/contract/manifest.json" ] || continue   # nothing to show
+    [ -f "$bundle/contract/manifest.json" ] || continue
     if [ -e "$OUT/$run/index.html" ]; then
       # a continued run updates its contract in place: rebuild if newer
       [ "$bundle/contract/manifest.json" -nt "$OUT/$run/index.html" ] || continue
@@ -82,7 +66,7 @@ while true; do
          > "$OUT/$run.log" 2>&1; then
       rm -rf "$OUT/$run.tmp"
       cp -r "$REPO/dist" "$OUT/$run.tmp"
-      # the pin this was built from, for the future rebuild-on-bump logic
+      # the pin this was built from, for a future rebuild-on-bump
       python3 - "$STATE/pins.json" <<EOF > "$OUT/$run.tmp/.built.json" || true
 import json, sys, datetime
 pins = {p["component"]: p for p in json.load(open(sys.argv[1]))["pins"]}

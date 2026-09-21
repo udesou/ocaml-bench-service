@@ -113,10 +113,8 @@ def cmd_facts(args):
     for name in sorted(suites_raw):
         spec = suites_raw[name] or {}
         programs_raw = spec.get("programs") or {}
-        # `ocamlrunparam:` (running-ng #15) is a suite-level default, overridable
-        # per program, merged over the config string's re/md.  Its presence means
-        # the ring/domain settings have moved OUT of config strings, so a
-        # generated config must not carry re-N|md-M and shadow them.
+        # `ocamlrunparam:` (running-ng #15) is merged over the config string's
+        # re/md, so a generated config must not carry re-N|md-M and shadow it.
         suite_orp = spec.get("ocamlrunparam")
         prog_orp = [
             p

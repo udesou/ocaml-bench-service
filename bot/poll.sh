@@ -1,21 +1,12 @@
 #!/usr/bin/env bash
-# The polling PR bot -- the GitHub-Actions workflow's twin, for servers that
-# GitHub's runners cannot reach (a machine behind a university NAT, say).
+# The polling PR bot, for servers GitHub's runners cannot reach.  Runs next to
+# bench-serve and needs only outbound https to api.github.com.  A thin client:
+# every comment starting with /bench goes to the server verbatim and the
+# returned markdown is posted as the reply.  Replies are posted by gh's
+# logged-in account; bot.cap asserts the commenter's login, which must still
+# pass the server's allowlist.  $STATE/bot-seen holds handled comment ids.
 #
 #   bot/poll.sh <owner/repo> [interval-seconds]
-#
-# It runs NEXT TO bench-serve and needs only OUTBOUND https to
-# api.github.com, mirroring the agent-pull philosophy: nothing dials in.
-# And it is still a THIN client (Q13): it parses nothing -- every comment
-# starting with /bench goes to the server verbatim, and whatever markdown
-# comes back (ack, reuse, help, refusal) is posted as the reply.
-#
-# Identity: replies are posted by gh's logged-in account; bot.cap asserts the
-# commenter's login, which must still pass the server's allowlist -- a
-# stranger commenting /bench gets the polite refusal, posted publicly.
-#
-# State: $STATE/bot-seen holds handled comment ids, so restarts never
-# double-submit (and the server's idempotency key backstops even that).
 
 set -uo pipefail
 
@@ -31,12 +22,10 @@ mkdir -p "$STATE"
 touch "$SEEN"
 
 SELF="$(gh api user -q .login)" || { echo "gh is not authenticated"; exit 1; }
-# Look back a little on startup so a restart does not orphan comments made
-# while the bot was down; bot-seen (and the server's idempotency key behind
-# it) keeps the overlap from double-posting.  Loop safety needs no author
-# check: the trigger is `startswith("/bench")` and no reply the bot posts
-# ever starts with that -- an author==SELF guard would break the common
-# single-account setup where the operator IS the posting account.
+# Look back on startup so a restart does not orphan comments made while the bot
+# was down; bot-seen and the server's idempotency key prevent double-posting.
+# No author==SELF guard: the trigger is startswith("/bench"), no reply starts
+# with that, and the operator is often the posting account.
 LOOKBACK="${BENCH_BOT_LOOKBACK:-900}"
 SINCE="$(date -u -d "@$(( $(date +%s) - LOOKBACK ))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
       || date -u -v-"${LOOKBACK}"S +%Y-%m-%dT%H:%M:%SZ)"
@@ -58,7 +47,7 @@ while :; do
     comment_url=$(field .html_url)
     body=$(field .body)
     # Only pull requests have compilers to measure; a /bench on a plain issue
-    # is noted and skipped.
+    # is skipped.
     if ! pr=$(gh api "repos/$REPO/pulls/$number" 2>/dev/null); then
       echo "bot: comment $id is on #$number, which is not a PR; ignoring"
       echo "$id" >> "$SEEN"
@@ -74,10 +63,8 @@ while :; do
         --comment-id "$id" --comment-url "$comment_url" \
         --head-sha "$head_sha" --base-ref "$base_ref" 2>&1)
     rc=$?
-    # bench-cli's exit codes are the contract: 0 = outcome, 1 = a refusal
-    # (both postable), >=2 = the wire or the client failed -- infrastructure
-    # noise is logged here and the comment is retried next poll, NOT posted
-    # to the PR and NOT marked seen.
+    # bench-cli exit codes: 0 = outcome, 1 = refusal (both postable), >=2 = the
+    # wire or client failed: log, retry next poll, do not post or mark seen.
     if [ "$rc" -ge 2 ]; then
       echo "bot: cannot serve comment $id right now (bench-cli exit $rc); will retry"
       printf '%s\n' "$reply" | sed 's/^/bot:   /'
@@ -93,17 +80,16 @@ while :; do
     echo "$id" >> "$SEEN"
   done
 
-  # Completion notices: the server renders <run>/completion.md when a run
-  # reaches a terminal state (the same renders-verbatim rule as replies);
-  # post each one once to its PR.  completion.posted is the idempotency
-  # marker; CLI-triggered runs have no PR and are marked without posting.
+  # Completion notices: the server renders <run>/completion.md at a terminal
+  # state; post each once to its PR.  completion.posted is the marker; CLI runs
+  # have no PR and are marked without posting.
   for f in "$STATE"/runs/*/completion.md; do
     [ -e "$f" ] || continue
     d=$(dirname "$f")
     [ -e "$d/completion.posted" ] && continue
     pr_url=$(jq -r '.pr_url // empty' "$d/request.json" 2>/dev/null)
     if [ -z "$pr_url" ]; then
-      touch "$d/completion.posted"   # a CLI run: the file itself is the record
+      touch "$d/completion.posted"
       continue
     fi
     path="${pr_url#https://github.com/}"

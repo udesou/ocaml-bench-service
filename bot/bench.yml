@@ -1,14 +1,10 @@
-# /bench on a pull request -> the benchmarking service.
-#
-# Copy this file into the fork's .github/workflows/ (the v1 prototype targets
-# the ocaml/ocaml fork, Q11).  It is a THIN client of API A: it parses nothing
-# of the /bench grammar (that lives in the server) and posts back whatever
-# markdown the server returns -- acknowledgement, reuse notice, help text, or
-# refusal alike.
+# /bench on a pull request -> the benchmarking service.  A thin client of API
+# A: parses nothing of the grammar and posts back whatever markdown the server
+# returns.  Copy into the fork's .github/workflows/.
 #
 # Setup (see bot/README.md):
-#   secrets.BENCH_BOT_CAP   base64 of the server's bot.cap capability file
-#                           (bench-serve writes it into <state>/caps/)
+#   secrets.BENCH_BOT_CAP   base64 of the server's bot.cap (bench-serve writes
+#                           it into <state>/caps/)
 #   vars.BENCH_CLI_URL      URL of a prebuilt linux bench-cli binary
 #
 # The server must be reachable from GitHub's runners at the address inside

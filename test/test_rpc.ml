@@ -1,20 +1,6 @@
-(* Round trips for the Cap'n Proto adapter (rpc/).
-
-   Local capabilities, no network: a call on an in-process capability goes
-   through the same generated schema code, JSON payload encoding and error
-   envelope that the wire uses, so this covers everything except sockets and
-   TLS -- which are capnp-rpc's to test, not ours.
-
-   What must hold:
-
-   * the identity is the capability: a service bound to an unlisted login is
-     Forbidden, whatever the client claims;
-   * a CLI origin's idempotency id is server-named, so two submissions of the
-     same command dedupe even when the client picks different origin ids;
-   * the error envelope survives the wire: code AND markdown;
-   * the bot capability asserts the commenter, who must still be allowlisted;
-   * a PR submission through the bot resolves baseline = merge base and
-     candidate = PR head (github resolver over a scratch repo). *)
+(* Round trips for the Cap'n Proto adapter over local capabilities: the same
+   generated schema code, JSON encoding and error envelope as the wire, minus
+   sockets and TLS. *)
 
 open Bench_service
 open Bench_rpc
@@ -280,8 +266,6 @@ let () =
   | Ok _ -> fail "an unlisted commenter should be refused");
 
   (* --- the agent path (API B) ---------------------------------------------- *)
-  (* A fresh queue, one submitted run, and the whole execution protocol over
-     the adapter: the same generated code and JSON payloads the wire uses. *)
   let d_agent = deps () in
   let api2 = Rpc.bench_api d_agent ~login:"udesou" in
   let agent = Rpc.agent_api d_agent ~machine:"monolith" in

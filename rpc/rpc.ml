@@ -1,23 +1,7 @@
-(* The Cap'n Proto adapter for API A (Q15).
-
-   Nothing here decides anything: it binds the generated schema code
-   (bench_api.capnp) to the server module on one side and offers typed client
-   calls on the other.  The design rules it enforces:
-
-   * **Identity is the capability.**  A [bench_api] service is constructed
-     around one login; whoever holds its sturdy ref IS that login.  Roles are
-     still re-derived from service.json per call (Server.effective_auth) --
-     holding a capability never grants admin.
-   * **The bot asserts, users cannot.**  Only the [bench_bot] service accepts
-     a login parameter; it is issued once, to the PR bot, which verified the
-     commenter via GitHub.
-   * **CLI idempotency is server-named.**  A `Cli` origin's id is rewritten to
-     "cli:<login>" here, so a client cannot dodge (or forge) the duplicate
-     check: resubmitting the same command while it is active lands on the
-     existing run.
-   * **Errors travel as the API A envelope**, JSON-encoded in the capnp
-     exception reason, so every client can show [error_markdown] and switch on
-     [code]. *)
+(* The Cap'n Proto adapter for API A: binds the generated schema to the server
+   module and offers typed client calls.  Identity is the capability, roles are
+   still re-derived per call; errors travel as the API A envelope, JSON-encoded
+   in the capnp exception reason. *)
 
 module Api_rpc = Bench_api.MakeRPC (Capnp_rpc)
 open Bench_service
@@ -27,9 +11,9 @@ let fail_api (e : Api.error) =
 
 let bad fmt = Printf.ksprintf (fun s -> { Api.code = Api.Bad_command; error_markdown = s }) fmt
 
-(* A failure of the WIRE, not of the command: transport errors and cancelled
-   calls come back as Internal so a requester (the bot, above all) can tell
-   "post this refusal" from "log this and retry". *)
+(* A failure of the wire, not of the command: transport errors and cancelled
+   calls come back as Internal so a requester can tell "post this refusal" from
+   "log this and retry". *)
 let transport fmt =
   Printf.ksprintf (fun s -> { Api.code = Api.Internal; error_markdown = s }) fmt
 
@@ -63,8 +47,8 @@ let origin_of_wire s =
     | Ok o -> Ok o
     | Error m -> Error (bad "%s" m))
 
-(* CLI origins are named by the server: the idempotency identity of a CLI
-   submission is (the login, the command), never something the client chose. *)
+(* CLI origins are named by the server: the idempotency identity is (login,
+   command), never something the client chose. *)
 let normalize_origin (auth : Api.auth) (o : Api.origin) =
   match o.Api.kind with
   | Api.Cli -> { o with Api.id = "cli:" ^ auth.Api.login }
@@ -310,8 +294,8 @@ let bench_bot deps =
            Capnp_rpc.Service.return response)
      end
 
-(* One machine's agent capability (§6.2): bound to a machine name the way a
-   BenchApi is bound to a login.  Holding it is being that machine's agent. *)
+(* One machine's agent capability, bound to a machine name as a BenchApi is
+   bound to a login. *)
 let agent_api deps ~machine =
   let module A = Api_rpc.Service.AgentApi in
   let text_result init set v =
