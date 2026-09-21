@@ -1,35 +1,7 @@
-(* bench-agent -- the bench machine daemon (API B, §6.2).
-
-   Dials the server (the agent pulls, §6.4: the machine needs no inbound
-   access at all) with an agent capability, claims work, executes it, ships
-   events and artifacts back, and reports its caches.  The capability file IS
-   the machine's identity: whoever holds agent-<machine>.cap is that
-   machine's agent.
-
-   The REAL executor (the default):
-
-     prepare   own working clones under --state-dir (never the operator's
-               personal checkouts), hard-checked-out to the spec's pinned
-               shas; the config materialized from the spec with
-               ${RUNNING_NG_ROOT} substituted, after verifying its md5
-     execute   the pinned tree's own launch script (tools switch, opam
-               compiler plugin, olly build, then python3 -m running runbms)
-               under setsid, supervised against the assignment's timeout
-               with a heartbeat every 30s -- a Cancel reply, like a timeout,
-               SIGTERMs the process group, waits out a grace, SIGKILLs
-     collect   the new run directory under LOG_DIR, mapped into the §8
-               bundle: contract/ and runbms*.yml verbatim, per-cell logs and
-               tool sidecars under raw/, our captured console.log; raw
-               memtrace traces never leave the machine (spec exclude)
-
-   Not here yet (stage 2b): switch-provenance enforcement and binary-cache
-   wiping (§6.3) -- this build reuses whatever running-ng reuses and deletes
-   nothing, because the opam root is shared with the operator's own compiler
-   cache.  --stub keeps the protocol-only executor for tests.
-
-   The process exits on a broken connection rather than reconnecting: a
-   supervisor loop (screen/systemd) restarting it is simpler and more honest
-   than half-reconnected state. *)
+(* bench-agent: the bench machine daemon (API B).  It dials the server with an
+   agent capability (the capability file is the machine's identity), claims
+   work, runs it, ships events and artifacts back and reports its caches.  It
+   exits on a broken connection; the supervisor loop restarts it. *)
 
 open Bench_service
 open Bench_rpc
@@ -42,9 +14,9 @@ type opts = {
   log_root : string option;  (* override LOG_DIR (default <state>/logs) *)
   opam_root : string option;  (* override OPAMROOT (default <state>/opam) *)
   interval : float;  (* seconds between empty claims *)
-  once : bool;  (* execute one assignment, then exit (smoke tests) *)
+  once : bool;  (* execute one assignment, then exit *)
   stub : bool;  (* protocol-only executor: no benchmark runs *)
-  stub_seconds : float;  (* how long the stub's fake measurement takes *)
+  stub_seconds : float;
 }
 
 let default_opts () =
@@ -138,7 +110,6 @@ let starts_with ~prefix s =
   String.length s >= String.length prefix
   && String.sub s 0 (String.length prefix) = prefix
 
-(* Replace every occurrence of [sub] in [s] with [by]. *)
 let replace_all ~sub ~by s =
   let b = Buffer.create (String.length s) in
   let n = String.length sub in
@@ -156,8 +127,7 @@ let replace_all ~sub ~by s =
   in
   if n = 0 then s else (go 0; Buffer.contents b)
 
-(* fnmatch over '/'-separated relative paths: '*' stops at '/', '**' crosses
-   it.  Enough for the spec's artifact globs. *)
+(* fnmatch over '/'-separated paths: '*' stops at '/', '**' crosses it. *)
 let glob_match pat s =
   let pl = String.length pat and sl = String.length s in
   let rec go i j =
@@ -176,7 +146,6 @@ let glob_match pat s =
   in
   go 0 0
 
-(* Every file under [root], as root-relative paths. *)
 let walk root =
   let acc = ref [] in
   let rec go rel =
@@ -202,7 +171,7 @@ let tail_of_file path n =
 
 (* --- the execution protocol, shared by both executors ------------------------ *)
 
-(* §7 event bodies, PROVISIONAL JSON spelling (API E is not agreed yet). *)
+(* Event bodies, PROVISIONAL JSON spelling. *)
 let phase_body phase detail =
   `Assoc
     [
@@ -266,7 +235,7 @@ let proto cap (id : Api.execution_id) =
         post [ finished_body result ];
         match Rpc.Agent_client.finish cap ~id result with
         | Ok () ->
-          (* the server's Ok IS the store confirmation (§6.4) *)
+          (* the server's Ok is the store confirmation *)
           log "%s execution %d finished: %s" id.Api.run_id id.Api.execution
             (Api.string_of_execution_outcome result.Api.outcome)
         | Error e -> log "finish failed: %s" e.Api.error_markdown);
@@ -308,9 +277,9 @@ let git args =
   | Ok out -> Ok out
   | Error msg -> Error msg
 
-(* The agent's own working clone of one pinned source, hard-positioned at the
-   spec's sha.  Untracked files survive on purpose: macro-benches caches its
-   built binaries in-tree (_build-<runtime>/) and olly its _build/. *)
+(* Working clone of one pinned source at the spec's sha.  Untracked files
+   survive on purpose: macro-benches caches built binaries in-tree and olly
+   its _build/. *)
 let ensure_checkout ~dir ~repo ~commit =
   let ( let* ) = Result.bind in
   let* () =
@@ -338,11 +307,9 @@ let ensure_checkout ~dir ~repo ~commit =
 
 let launch_script = "run_ocaml_bench_gc_sweep.sh"
 
-(* The child gets a MINIMAL environment, never ours: running-ng dumps the
-   full environment into every per-cell log, and those logs are published
-   store artifacts -- a session token from the agent's inherited env ended
-   up on a public results repo (GitGuardian incident, 2026-08-29).  An
-   allowlist of what a build legitimately needs, plus our overrides. *)
+(* The child gets a minimal allowlisted environment, never ours: running-ng
+   dumps the environment into every per-cell log, and those logs are published
+   artifacts (a session token leaked that way on 2026-08-29). *)
 let env_allowlist =
   [
     "HOME"; "USER"; "LOGNAME"; "SHELL"; "LANG"; "LC_ALL"; "TERM"; "TMPDIR";
@@ -363,7 +330,7 @@ let child_env overrides =
   Array.of_list (inherited @ List.map (fun (k, v) -> k ^ "=" ^ v) overrides)
 
 (* SIGTERM the child's process group (setsid made pid its group), grace,
-   SIGKILL, and reap. *)
+   SIGKILL, reap. *)
 let kill_group ~clock pid =
   let signal s = try Unix.kill (-pid) s with Unix.Unix_error _ -> () in
   signal Sys.sigterm;
@@ -453,14 +420,10 @@ let run_supervised ?on_tick ~clock (p : proto) ~ph ~timeout_seconds
   Unix.close devnull;
   r
 
-(* macro-benches is a monorepo whose vendored dependency trees (duniverse/,
-   vendor/, _rocq_prefix/) are gitignored PRODUCTS of its own `make setup`,
-   so a checkout alone cannot build anything.  Run that setup whenever the
-   pinned commit moves, and drop the vendored trees first when the LOCK FILE
-   moved -- setup-monorepo.sh deliberately skips re-pulling a populated
-   duniverse/.  Tracked in <state>/benches-setup.json; supervised like the
-   benchmark itself (a bump-triggered re-vendor takes long enough to need
-   heartbeats and deserves a working cancel). *)
+(* macro-benches' vendored trees (duniverse/, vendor/, _rocq_prefix/) are
+   products of its own `make setup`: rerun it when the pinned commit moves,
+   dropping the trees first when the lock file moved (setup-monorepo.sh skips
+   a populated duniverse/).  Tracked in <state>/benches-setup.json. *)
 let ensure_benches_setup ~clock (p : proto) ~state ~dir ~commit ~workdir =
   let setup_script = Filename.concat dir "scripts/setup-monorepo.sh" in
   if not (Sys.file_exists setup_script) then `Ok (* nothing to vendor *)
@@ -525,14 +488,10 @@ let has_sub ~needle hay =
   in
   nl > 0 && go 0
 
-(* PROVISIONAL per-benchmark progress, until the running-ng progress plugin
-   lands (the honest producer): running-ng drops files as it works -- one
-   per-cell log per (benchmark, config), tool sidecars on completion -- so
-   watching the run directory on the heartbeat tick yields "what runs now"
-   and a completed count without touching running-ng.  Failures are grepped
-   from NEW console output (running-ng's own warning lines); that is log
-   parsing, accepted as provisional and capped so a pathological run cannot
-   flood the event stream. *)
+(* PROVISIONAL per-benchmark progress until the running-ng progress plugin
+   lands: watch the run directory for per-cell logs and sidecars on each tick.
+   Failures are grepped from new console output, capped so a pathological run
+   cannot flood the event stream. *)
 let progress_tracker (p : proto) ~log_root ~before ~resume_dir
     ~console_path ~cells_total =
   let last = ref ("", -1) in
@@ -622,16 +581,10 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
   let log_root =
     Option.value opts.log_root ~default:(Filename.concat state "logs")
   in
-  (* The agent's own opam root, like its own clones and logs. Sharing the
-     user's root means sharing every running-ng-* switch, the opam-compiler
-     plugin symlink and the opam lock, so local work and the agent can damage
-     each other's switches: obelisk ran for months with opam-compiler evicted
-     from its tools switch by a local sweep, and reported ok throughout.
-     running-ng derives its switch-state file from OPAMROOT, so isolating the
-     root isolates that record too.
-
-     Sharing is still available with --opam-root, for a machine where the cost
-     of rebuilding every runtime switch outweighs the isolation. *)
+  (* The agent's own opam root: sharing the user's root shares every
+     running-ng-* switch, the opam-compiler plugin symlink and the opam lock,
+     so local work and the agent can break each other's switches.
+     --opam-root still allows sharing. *)
   let opam_root =
     Option.value opts.opam_root ~default:(Filename.concat state "opam")
   in
@@ -772,11 +725,9 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
               jint (member "programs" (member "selection" spec))
               * jint (member "config_count" (member "measurement" spec))
             in
-            (* `/bench continue`: resume the previous execution's run
-               directory when this machine still has it -- running-ng redoes
-               only the cells without results (--resume), and clearing the
-               .build-failed sentinels lets failed builds retry.  Without a
-               surviving directory the run simply starts afresh. *)
+            (* `/bench continue`: resume the previous execution's run directory
+               when this machine still has it; clearing the .build-failed
+               sentinels lets failed builds retry.  Otherwise start afresh. *)
             let resume_record = Filename.concat state "resume" in
             let resume_dir =
               if not a.Api.resume then None
@@ -898,9 +849,9 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
             (* --- finish ---------------------------------------------------- *)
             match outcome with
             | `Exited (Unix.WEXITED 0) ->
-              (* exit 0 is not success: running-ng skips failed benchmark
-                 builds and finishes cleanly, so ask the contract whether
-                 anything was actually measured *)
+              (* exit 0 is not success: running-ng skips failed benchmark builds
+                 and finishes cleanly, so ask the contract whether anything
+                 was measured *)
               let measured =
                 List.exists
                   (fun d ->
@@ -919,8 +870,8 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
                 p.finish
                   {
                     Api.outcome = `Done;
-                    (* planned counts until the §7 progress plugin reports
-                       real per-cell passes *)
+                    (* planned counts until the progress plugin reports real per-cell
+                       passes *)
                     cells_passed = planned;
                     cells_failed = 0;
                     detail = None;
@@ -976,8 +927,8 @@ let execute_stub cap ~clock ~stub_seconds (a : Api.assignment) =
       match phase p Api.Collecting None with
       | `Cancel -> abort p ~detail:"cancelled via heartbeat"
       | `Continue ->
-        (* report.md is the SERVER's to render; the stub leaves its marker
-           under raw/ like any other agent artifact *)
+        (* report.md is the server's to render; the stub leaves its marker
+           under raw/ *)
         p.upload ~path:"raw/stub.md"
           ~content:
             (Printf.sprintf
@@ -1013,8 +964,7 @@ let () =
   | Ok sr -> (
     match
       Capnp_rpc_unix.with_cap_exn sr @@ fun cap ->
-      (* an empty report registers the machine's cache view (stage 2b fills
-         it with real switch/binary provenance) *)
+      (* an empty report registers the machine's cache view *)
       (match Rpc.Agent_client.report_caches cap [] with
       | Ok () -> ()
       | Error e -> log "report_caches failed: %s" e.Api.error_markdown);

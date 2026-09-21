@@ -1,58 +1,28 @@
-(* The request server: the first real implementation of API A.
-
-   This is the §5.2 signature over the existing pipeline (grammar -> authz ->
-   validation -> config -> run spec), with a FILE-BACKED QUEUE: every accepted
-   run becomes a directory under <state>/runs/<run_id>/ holding meta.json (the
-   §8 index record), request.json (the audit record), runspec.json and the
-   generated config.  The EXECUTION side (§6.2, the bottom of this file)
-   drains it: the agent claims a run, heartbeats under a lease, streams
-   events, uploads artifacts into the same directory (the v1 store bundle)
-   and finishes it.
-
-   Scope of this build, stated rather than implied:
-
-   * **In-process.**  The server is a library; bench-cli instantiates it
-     directly.  A transport (capnp per Q15) wraps this module without changing
-     it -- that is the point of the signature-first rule.
-   * **Offline resolution** (Resolver.offline): versions and shas pass
-     through, refs and PR-comment submissions are refused with instructions.
-     The GitHub-backed resolver drops into `deps.resolver`.
-   * **No result reuse yet**: run keys need resolved shas and agent-reported
-     machine facts (tool versions, env fingerprint), so nothing computes them
-     and `find_by_run_key` would never hit; submits therefore never answer
-     `Reused`.  Idempotency (`Duplicate`) IS implemented, checked against
-     ACTIVE runs only -- completed runs are run-key territory (§8.1).
-   * `evict` refuses honestly: caches are REPORTED (report_caches), but how
-     an eviction order reaches a machine the server never connects to is a
-     question raised on the document, not decided here.
-
-   Roles: the caller's `auth.role` is NOT trusted.  Identity (the login) is the
-   transport's to prove; the ROLE is this server's to decide, from the admins
-   list in service.json.  A client that self-declares Admin gets whatever the
-   config says it gets. *)
+(* The request server (API A) over a file-backed queue: each accepted run is a
+   directory under <state>/runs/<run_id>/ which the execution side (API B, at
+   the bottom of this file) drains.  The caller's role is never trusted; it is
+   recomputed from the admins list in service.json. *)
 
 type deps = {
   service : Service_config.t;
   facts : Facts.t;
   sweepable : Vocab.dim list;
-  base_include : string;  (** the base config path used in generated configs *)
+  base_include : string;
   program_count : tags:string list -> (int, string) result;
       (** running-ng's own tag filter, via the bridge; injectable for tests *)
   resolver : Resolver.t;
   sources : Runspec.source list;
       (** per-run source snapshots, derived from the pins at startup *)
   pin_config : (Api.component * string * string) list;
-      (** component -> (local checkout dir, tracked ref); what seed and
-          bare-bump resolve against *)
-  service_version : string;  (** the server's own build, for `versions` *)
+      (** per component: local checkout dir and tracked ref; what seed and bare bump resolve against *)
+  service_version : string;
   validate_pin : Api.component -> commit:string -> (unit, string) result;
-      (** dry-run a candidate pin before adoption (e.g. running-ng: extract
-          and load facts); injectable, noop in tests *)
+      (** dry-run a candidate pin before adoption; injectable, noop in tests *)
   on_bump : unit -> unit;
       (** the daemon's adoption hook (re-exec); noop in tests *)
   state_dir : string;
-  base_url : string;  (** links in acknowledgements point under here *)
-  max_active_per_user : int;  (** queued+running cap per user (Q10) *)
+  base_url : string;
+  max_active_per_user : int;  (** queued+running cap per user *)
 }
 
 let ( let* ) = Result.bind
@@ -112,8 +82,7 @@ let is_active (m : Api.meta) =
   match m.state with Api.Queued | Api.Running -> true | _ -> false
 
 (* The webview's data: one snapshot of every meta record, rewritten on every
-   state change (the §10/Q6 model: a static page polls this file -- with a
-   capnp-only wire, files over HTTP are the browser's read path, not API A). *)
+   state change; the static page polls this file. *)
 let refresh_index deps =
   let dir = Filename.concat deps.state_dir "webview" in
   mkdir_p dir;
@@ -131,7 +100,6 @@ let save_meta deps (m : Api.meta) =
   refresh_index deps
 
 let stamp deps run_id state_name =
-  (* append state -> timestamp to request.json's audit trail *)
   match request_json_of deps run_id with
   | None -> ()
   | Some j ->
@@ -161,7 +129,7 @@ let fresh_run_id deps =
   in
   go 1
 
-(* --- version pins (§6.3): the server's control file ------------------------- *)
+(* --- version pins: the server's control file --------------------------------- *)
 
 let pins_file ~state_dir = Filename.concat state_dir "pins.json"
 
@@ -193,7 +161,7 @@ let looks_like_version v =
   | _ -> false
 
 (* The declared X.Y.Z of a pinned commit: a VERSION file when the component
-   ships one (the dashboard), else the target when it names a version tag. *)
+   ships one, else the target when it names a version tag. *)
 let pin_version ~dir ~commit ~target =
   match
     Resolver.git_run ~git:"git" [ "-C"; dir; "show"; commit ^ ":VERSION" ]
@@ -201,8 +169,8 @@ let pin_version ~dir ~commit ~target =
   | Ok v when String.trim v <> "" -> Some (String.trim v)
   | _ -> if looks_like_version target then Some target else None
 
-(* Seed pins.json on first start from the configured checkouts; afterwards
-   pins change only through `bump` -- a restart never silently re-pins. *)
+(* Seeded on first start from the configured checkouts; afterwards pins change
+   only through `bump`, never on restart. *)
 let init_pins ~state_dir ~pin_config =
   match read_pins_at ~state_dir with
   | _ :: _ as pins -> pins
@@ -234,10 +202,10 @@ let init_pins ~state_dir ~pin_config =
     write_pins_at ~state_dir pins;
     pins
 
-(* --- execution state (§6.2): the server's record of one attempt ------------- *)
+(* --- execution state: the server's record of one attempt --------------------- *)
 
-(* execution.json in the run directory, server-owned like meta.json.  One
-   record per run, overwritten when a requeue starts the next attempt. *)
+(* execution.json in the run directory, server-owned like meta.json; overwritten
+   when a requeue starts the next attempt. *)
 type exec_state = {
   execution : int;
   exec_machine : string;
@@ -251,9 +219,8 @@ type exec_state = {
 let execution_file deps run_id =
   Filename.concat (run_dir deps run_id) "execution.json"
 
-(* An agent that stops heartbeating for this long is presumed dead; its run
-   becomes claimable again (the next claim increments `execution`).  Generous
-   because a machine mid-compiler-build is busy, not dead. *)
+(* An agent silent for this long is presumed dead and its run becomes claimable
+   again.  Generous: a machine mid-compiler-build is busy, not dead. *)
 let lease_seconds = 15. *. 60.
 
 let read_exec deps run_id =
@@ -313,12 +280,12 @@ let set_drained deps names =
 (* --- shared pieces --------------------------------------------------------- *)
 
 let links deps run_id =
-  (* both land on the per-run page (§10): live status while the run is
-     active, results and the dashboard link once it is done *)
+  (* both point at the per-run page: live status while active, results and
+     dashboard link once done *)
   let page = Printf.sprintf "%s/run.html#%s" deps.base_url run_id in
   { Api.status = page; webview = page }
 
-(* The caller proves the login; the CONFIG decides the role and whether the
+(* The caller proves the login; the config decides the role and whether the
    login may trigger at all. *)
 let effective_auth deps (a : Api.auth) =
   match Authz.check deps.service ~login:a.Api.login ~association:None with
@@ -339,8 +306,8 @@ let pin_of_variant ~default_repo (v : Variant.t) =
     commit =
       (match v.Variant.spec with
       | Variant.Commit sha -> sha
-      (* Offline placeholder: the GitHub resolver pins the release tag's sha
-         here.  Until then the version string is the truthful pin value. *)
+      (* Offline placeholder: the GitHub resolver pins the release tag's sha here;
+         until then the version string is the pin value. *)
       | Variant.Version ver -> ver);
     repo = Option.value v.Variant.repo ~default:default_repo;
     configure_args = v.Variant.configure_args;
@@ -396,13 +363,10 @@ let render_ack deps ~run_id ~(request : Request.t) ~(spec : Gen.t) ~machine
   List.iter (fun w -> add "\n> %s" w) spec.Gen.warnings;
   Buffer.contents b
 
-(* The completion notice, rendered HERE (the server renders, requesters post
-   verbatim -- the same rule as every other message) and parked in the bundle
-   as completion.md.  The bot posts it once to the run's PR and leaves a
-   completion.posted marker; CLI runs just keep the file as a record. *)
-(* report.md: rendered from the bundle's contract at finish (policy and
-   verdict gates in lib/report.ml).  Defensive at every step: a rendering
-   problem must never lose a finish. *)
+(* The completion notice is rendered here and parked in the bundle as
+   completion.md; the bot posts it once and leaves a completion.posted marker. *)
+(* report.md is rendered from the bundle's contract at finish.  Defensive at
+   every step: a rendering problem must never lose a finish. *)
 let render_report deps (m : Api.meta) =
   match m.Api.baseline with
   | None -> None
@@ -453,8 +417,7 @@ let write_completion deps (m : Api.meta) ~detail ~report =
   (match detail with
   | Some d when m.Api.state <> Api.Done -> add "\n> %s\n" (Util.trim d)
   | _ -> ());
-  (* the report rides along VERBATIM (agreed 2026-08-31): no separate summary
-     vocabulary, the tables are the summary *)
+  (* the report rides along verbatim: the tables are the summary *)
   (match report with
   | Some body when String.length body <= 6000 -> add "\n%s" body
   | Some _ ->
@@ -468,11 +431,9 @@ let write_completion deps (m : Api.meta) ~detail ~report =
 
 (* --- the API A functions ---------------------------------------------------- *)
 
-(* Post-auth cancellation, shared by the cancel operation and `/bench cancel`
-   arriving through submit (Q18).  A queued run dies here; a RUNNING run is
-   only signalled -- the machine is unreachable from the server (Q1), so the
-   cancel order travels as the reply to the agent's next heartbeat, and the
-   state stays Running until the agent confirms via finish. *)
+(* Post-auth cancellation, shared by cancel and `/bench cancel` via submit.  A
+   queued run dies here; a running run is only signalled: the cancel order is the
+   reply to the agent's next heartbeat and the state stays Running until finish. *)
 let cancel_run deps (auth : Api.auth) ~run_id =
   match meta_of deps run_id with
   | None -> err Api.Not_found "No run `%s` is known to this server." run_id
@@ -513,8 +474,8 @@ let cancel_run deps (auth : Api.auth) ~run_id =
 let resume_marker deps run_id =
   Filename.concat (run_dir deps run_id) "resume.requested"
 
-(* the shared core of requeue and continue: a terminal run back on the
-   queue, same spec and pins, the next claim starting execution N+1 *)
+(* shared core of requeue and continue: a terminal run back on the queue, same
+   spec and pins, the next claim starting execution N+1 *)
 let reissue deps (m : Api.meta) ~run_id ~stamp_as =
   match m.Api.state with
   | Api.Queued | Api.Running | Api.Publishing ->
@@ -544,12 +505,9 @@ let reissue deps (m : Api.meta) ~run_id ~stamp_as =
     stamp deps run_id stamp_as;
     Ok ()
 
-(* `/bench continue <id>`: finish a terminal run's missing cells.  A new
-   execution of the SAME run (same spec, same pins, same bundle); the
-   assignment carries resume=true, the agent re-invokes running-ng with
-   --resume into the surviving run directory, and running-ng redoes only the
-   cells without results (failed builds retried: the agent clears the
-   .build-failed sentinels).  Owner or admin, like cancel. *)
+(* `/bench continue <id>`: a new execution of the same run with resume=true;
+   the agent re-invokes running-ng with --resume and only the cells without
+   results are redone (failed builds retried).  Owner or admin, like cancel. *)
 let continue_run deps (auth : Api.auth) ~run_id =
   match meta_of deps run_id with
   | None -> err Api.Not_found "No run `%s` is known to this server." run_id
@@ -571,9 +529,8 @@ let submit deps (auth0 : Api.auth) (s : Api.submit) =
     | Error e -> Error { Api.code = Api.Bad_command; error_markdown = e }
   in
   match request.Request.action with
-  (* Non-run commands are answers, not runs (Q18): the server acts and the
-     requester posts the markdown verbatim -- it cannot pre-parse and route
-     these itself, because the grammar lives here (Q13). *)
+  (* Non-run commands are answers, not runs: the server acts and the requester
+     posts the markdown verbatim, since the grammar lives here. *)
   | Request.Help -> Ok (Api.Answered { markdown = render_help deps })
   | Request.Continue id ->
     let* () = continue_run deps auth ~run_id:id in
@@ -667,9 +624,8 @@ let submit deps (auth0 : Api.auth) (s : Api.submit) =
       let* program_count =
         match deps.program_count ~tags:(Request.resolved_tags request) with
         | Ok n -> Ok n
-        (* The bridge failing is OUR fault (a running-ng drift, a broken
-           helper), never the command's: the raw tool output goes to the
-           server log, the user gets the incident id. *)
+        (* A bridge failure is the service's fault, never the command's: raw tool
+           output goes to the server log, the user gets the incident id. *)
         | Error detail ->
           Api.internal
             ~detail:("tag filter failed for " ^ Util.trim request.Request.raw
@@ -685,9 +641,9 @@ let submit deps (auth0 : Api.auth) (s : Api.submit) =
       let ctx =
         {
           Gen.request_id = run_id;
-          (* the SERVER validates against its real tree (deps.base_include),
-             but the config it ships is machine-independent: the agent
-             substitutes its own checkout for the placeholder (§6.1) *)
+          (* validated against the server's real tree, but the shipped config is
+             machine-independent: the agent substitutes its own checkout for
+             the placeholder *)
           base_include = Runspec.base_include_placeholder;
           machine = machine.Service_config.name;
           requested_by = Some auth.Api.login;
@@ -700,9 +656,8 @@ let submit deps (auth0 : Api.auth) (s : Api.submit) =
       let* spec = Gen.generate ~ctx ~request ~facts:deps.facts
           ~sweepable:deps.sweepable ~variants
       in
-      (* persist the run: this directory IS the queue row.  The spec carries
-         no machine-side detail (§6.1: paths, env and invocation are the
-         agent's); which SLOT executes it is the claim's concern (§6.2). *)
+      (* this directory is the queue row; the spec carries no machine-side detail,
+         and which slot executes it is the claim's concern *)
       let dir = run_dir deps run_id in
       mkdir_p dir;
       Util.write_file
@@ -939,9 +894,8 @@ let set_drain deps (auth0 : Api.auth) ~machine ~drained:want =
 let drain deps auth ~machine = set_drain deps auth ~machine ~drained:true
 let undrain deps auth ~machine = set_drain deps auth ~machine ~drained:false
 
-(* Put a terminal run back on the queue: the run keeps its identity and its
-   spec (the pins it snapshotted), and the next claim starts execution N+1.
-   An active run is not requeueable -- cancel it first. *)
+(* Put a terminal run back on the queue with its identity and spec; the next
+   claim starts execution N+1.  An active run must be cancelled first. *)
 let requeue deps (auth0 : Api.auth) ~run_id =
   let* auth = effective_auth deps auth0 in
   let* () = require_admin auth in
@@ -979,9 +933,8 @@ let evict deps (auth0 : Api.auth) ~machine (_ : Api.cache_selector) =
       "No agent has reported caches for `%s` yet; there is nothing to evict."
       machine
   | Some (reported_at, entries) ->
-    (* Visibility exists (report_caches); the DELIVERY of an eviction order to
-       a machine the server cannot connect to is not designed yet -- raised on
-       the document rather than invented here. *)
+    (* Caches are visible (report_caches), but delivering an eviction order to a
+       machine the server cannot connect to is not designed yet. *)
     err Api.Bad_command
       "Eviction is not wired to the agent yet. `%s` last reported %d cache \
        entr%s at %s."
@@ -999,9 +952,8 @@ let versions deps (auth0 : Api.auth) =
       machines = [] (* agent-reported, once agents exist *);
     }
 
-(* Adopt a new version of a component (§6.3): validate before adopting, write
-   pins.json, fire the daemon's adoption hook.  Queued specs are untouched by
-   construction -- they snapshotted the pins at submission. *)
+(* Validate, write pins.json, fire the daemon's adoption hook.  Queued specs
+   snapshotted the pins at submission, so they are untouched. *)
 let bump deps (auth0 : Api.auth) ~component ?to_ () =
   let* auth = effective_auth deps auth0 in
   let* () = require_admin auth in
@@ -1054,17 +1006,14 @@ let bump deps (auth0 : Api.auth) ~component ?to_ () =
         deps.on_bump ();
         Ok pin))
 
-(* --- API B: the execution side (§6.2) --------------------------------------- *)
-(* Called BY the agent (§6.4: the agent dials out; the server never connects
-   to a machine).  ~machine is the transport-proven identity -- the agent
-   capability is bound to one machine exactly as a user capability is bound
-   to one login.  No roles here: an agent capability can only do agent
-   things, and only for its own machine's runs. *)
+(* --- API B: the execution side ------------------------------------------------ *)
+(* Called by the agent, which dials out; the server never connects to a machine.
+   ~machine is the transport-proven identity and an agent may only act on its own
+   machine's runs. *)
 
-(* The guard on every per-execution call: the run exists, the execution
-   record matches the caller's id, and the caller is the machine it was
-   assigned to.  A mismatch means the lease moved on (the server presumed the
-   agent dead and reassigned) -- the stale agent must stop, not write. *)
+(* Guard on every per-execution call.  A mismatch means the lease moved on (the
+   agent was presumed dead and the run reassigned): the stale agent must stop,
+   not write. *)
 let own_execution deps ~machine (id : Api.execution_id) =
   match meta_of deps id.Api.run_id with
   | None ->
@@ -1250,7 +1199,7 @@ let server_owned =
     "meta.json"; "request.json"; "runspec.json"; "config.yml";
     "execution.json"; "events.ndjson"; "completion.md"; "completion.posted";
     "resume.requested";
-    "report.md" (* rendered by the server at finish, not uploaded *);
+    "report.md";
   ]
 
 let safe_rel_path p =
@@ -1269,9 +1218,9 @@ let upload deps ~machine (id : Api.execution_id) (a : Api.artifact) =
     err Api.Forbidden "`%s` is server-owned; an agent cannot write it."
       a.Api.path
   else begin
-    (* v1 store: the run directory IS the bundle (§8's layout), so landing
-       artifacts beside meta.json is the store write, and finish's Ok is the
-       confirmation after which the agent may delete its local run dir *)
+    (* the run directory is the bundle, so landing artifacts beside meta.json is
+       the store write; finish's Ok tells the agent it may delete its local run
+       dir *)
     let dst = Filename.concat (run_dir deps id.Api.run_id) a.Api.path in
     mkdir_p (Filename.dirname dst);
     Util.write_file dst a.Api.content;
@@ -1304,8 +1253,7 @@ let finish deps ~machine (id : Api.execution_id) (r : Api.execution_result) =
     in
     save_meta deps m;
     stamp deps id.Api.run_id (Api.string_of_run_state state);
-    (* the report: from whatever contract exists -- failed and timed-out runs
-       included, the contract degrades gracefully (§4) *)
+    (* failed and timed-out runs included: the contract degrades gracefully *)
     let report = render_report deps m in
     (match report with
     | Some body ->
@@ -1333,7 +1281,6 @@ let report_caches deps ~machine entries =
     Ok ()
   end
 
-(* One machine's view of the service, the §6.2 module. *)
 let execution_api deps ~machine : (module Api.EXECUTION_API) =
   (module struct
     let claim () = claim deps ~machine
@@ -1344,8 +1291,6 @@ let execution_api deps ~machine : (module Api.EXECUTION_API) =
     let report_caches entries = report_caches deps ~machine entries
   end)
 
-(* The whole thing as the document's module, proving the signature is
-   implementable as specified. *)
 let request_api deps : (module Api.REQUEST_API) =
   (module struct
     let submit a s = submit deps a s

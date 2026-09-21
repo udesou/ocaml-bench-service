@@ -1,21 +1,7 @@
-(* Sweep dimensions, read from the contract's generated vocab.json.
-
-   The comment grammar speaks the contract's canonical dimension names
-   (`space_overhead`), not running-ng's modifier tokens (`o`).  That mapping is
-   `dimension_of_modifier` in registry.ml, generated into
-   schema/json/vocab.json -- so the user-facing vocabulary stays in sync with
-   the contract by construction.
-
-   Policy (ours, not the contract's): not every mapped dimension is something a
-   PR author should sweep.
-
-   * runtime_events_ring_log2 / max_domains -- `re`/`md`/`re_par`/`md_par` are
-     measurement infrastructure.  Changing them doesn't probe the compiler, it
-     breaks the harness (a wrong ring size makes olly drop events).
-   * gc_plan / gc_threads -- MMTk-only (`plan`/`threads` are EnvVar modifiers on
-     OCamlMMTk runtimes); meaningless for a stock OCaml PR.
-
-   What remains is the GC parameter set: s, o, M, m. *)
+(* Sweep dimensions, read from the contract's generated vocab.json so the
+   grammar's canonical names (`space_overhead`) stay in sync with the contract.
+   Policy: runtime_events_ring_log2/max_domains are measurement infrastructure
+   and gc_plan/gc_threads are MMTk-only, so only s, o, M, m are sweepable. *)
 
 type dim = { dimension : string; modifier : string; unit_ : string }
 
@@ -62,10 +48,8 @@ let of_file ?(sweepable_only = true) path =
 let find dims dimension =
   List.find_opt (fun d -> d.dimension = dimension) dims
 
-(* The comment grammar accepts either spelling: `sweep=o:80,120` (the
-   OCAMLRUNPARAM letter people actually say) or `sweep=space_overhead:80,120`
-   (the contract's canonical name).  Both resolve to the same modifier, so the
-   generated config and the emitted dimension stay consistent either way. *)
+(* Either spelling is accepted, `sweep=o:80,120` or `sweep=space_overhead:80,120`;
+   both resolve to the same modifier. *)
 let find_any dims key =
   match find dims key with
   | Some d -> Some d

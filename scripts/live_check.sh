@@ -1,22 +1,15 @@
 #!/usr/bin/env bash
-# Live check: generate configs from the *working copies* of running-ng and
-# ocaml-bench-dashboard, and push each one through running-ng's real validate()
-# + validate_tags().
-#
-# The table tests in test/ run against snapshots so they only fail when the
-# generator changes.  This script is the other half: it fails when the base
-# config or the contract vocabulary moves under us.  If this fails while
-# `dune test` passes, refresh test/fixtures (see test/fixtures/PROVENANCE).
-#
-# Nothing here provisions a switch, builds a compiler, or takes the opam lock:
-# validate() never calls resolve_class().  Safe to run while a benchmark is
-# running on the same machine.
+# Live check: generate configs from a pinned ref of running-ng and the
+# ocaml-bench-dashboard working copy, and push each through running-ng's real
+# validate() + validate_tags().  The table tests in test/ only fail when the
+# generator changes; this fails when the base config or vocabulary moves.  If
+# this fails while `dune test` passes, refresh test/fixtures (see
+# test/fixtures/PROVENANCE).  Takes no opam lock: safe during a benchmark.
 #
 # Usage: scripts/live_check.sh [--switch OPAM_SWITCH]
 
 set -uo pipefail
 
-# Default to the repo-local switch created by `make switch`.
 SWITCH="${SWITCH:-.}"
 [ "${1:-}" = "--switch" ] && SWITCH="$2"
 
@@ -26,14 +19,9 @@ cd "$ROOT"
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
-# Read the base config from a PINNED REF, not from whatever branch the working
-# copy happens to be on.  running-ng has a dozen feature branches; testing
-# against the checked-out one makes this script fail for reasons that have
-# nothing to do with the service (a branch that predates the ladder tags has no
-# `small_run`, for instance).
-#
-# Override with BASE_CONFIG=<path> to test a working copy on purpose -- useful
-# when developing against an unmerged running-ng change.
+# Read the base config from a pinned ref, not the working copy's branch:
+# running-ng has a dozen feature branches.  BASE_CONFIG=<path> tests a working
+# copy on purpose.
 RUNNING_NG_REPO="${RUNNING_NG_REPO:-$HOME/running-ng}"
 RUNNING_NG_REF="${RUNNING_NG_REF:-origin/adding-ocaml-support}"
 BASE_IN_REPO="src/running/config/base/ocaml/macro_base.yml"
@@ -53,12 +41,9 @@ else
 fi
 VOCAB="${VOCAB:-$HOME/ocaml-bench-dashboard/schema/json/vocab.json}"
 
-# The bridge imports running-ng's PYTHON too, and it must come from the SAME
-# pinned ref as the config -- validating a ref's config with another branch's
-# code is exactly the drift this script exists to catch (bitten for real when
-# running-ng #13 changed the benchmarks: entry shape and the working copy was
-# elsewhere).  RUNNING_NG_SRC still overrides, for testing unmerged running-ng
-# changes on purpose.
+# The bridge imports running-ng's python too; it must come from the same pinned
+# ref as the config (bitten when running-ng #13 changed the benchmarks: entry
+# shape).  RUNNING_NG_SRC still overrides.
 if [ -z "${RUNNING_NG_SRC:-}" ] && [ -z "${BASE_CONFIG:-}" ]; then
   git -C "$RUNNING_NG_REPO" archive "$RUNNING_NG_REF" src | tar -x -C "$OUT"
   RUNNING_NG_SRC="$OUT/src"
@@ -77,7 +62,6 @@ opam exec --switch="$SWITCH" -- dune build 2>&1 || { echo "BUILD FAILED"; exit 1
 fails=0
 n=0
 
-# Each case must generate AND pass running-ng's validators.
 check() {
   local name="$1"; shift
   n=$((n + 1))
@@ -94,8 +78,8 @@ check() {
   fi
 }
 
-# Same, but only one runtime: exercises the no-comparisons path, which
-# validate() would reject if we emitted an unreferenced runtime.
+# One runtime only: the no-comparisons path, which validate() would reject if
+# we emitted an unreferenced runtime.
 check_single() {
   local name="$1"; shift
   n=$((n + 1))
@@ -111,7 +95,6 @@ check_single() {
   fi
 }
 
-# A case that must be REFUSED, with the reason we expect.
 check_rejects() {
   local name="$1" comment="$2" needle="$3"
   n=$((n + 1))

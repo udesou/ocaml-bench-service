@@ -1,9 +1,6 @@
-(* Facts about the base config, as reported by scripts/rng_helper.py.
-
-   We never parse macro_base.yml ourselves.  running-ng owns includes/overrides
-   merge semantics and the tag block; a second implementation of those rules is
-   precisely the drift DATA_CONTRACT.md exists to prevent.  So the bridge dumps
-   JSON and this module only reads it. *)
+(* Facts about the base config, as dumped by scripts/rng_helper.py.  We never
+   parse macro_base.yml ourselves: running-ng owns the includes/overrides merge
+   semantics and the tag block. *)
 
 type tag = { name : string; programs : int; gap : bool }
 
@@ -17,11 +14,10 @@ type suite = {
 type t = {
   invocations : int;
   schema_version : string option;
-  (* True once any suite or program declares `ocamlrunparam:` (running-ng #15).
-     Then the runtime_events ring and domain cap live on the benchmarks, and a
-     generated config must NOT carry re-N|md-M -- a config-string value is
-     merged under the benchmark's, so a global one shadows nothing useful and
-     silently reintroduces the setting we moved out. *)
+  (* True once any suite or program declares `ocamlrunparam:` (running-ng #15):
+     then a generated config must not carry re-N|md-M, since a config-string
+     value is merged under the benchmark's and would reintroduce the global
+     setting. *)
   uses_ocamlrunparam : bool;
   tags : tag list;
   suites : suite list;
@@ -121,19 +117,10 @@ let find_tag t name = List.find_opt (fun (tg : tag) -> tg.name = name) t.tags
 let enabled_programs t =
   List.concat_map (fun (s : suite) -> s.enabled) t.suites
 
-(* Suites with enabled programs that need the *parallel* runtime_events settings
-   plus CPU pinning (`re_par-22|md_par-8|pin_lavyek`) in the config string.
-
-   running-ng #15 moved the sequential `re`/`md` onto the benchmarks
-   (`ocamlrunparam:`) but deliberately left the parallel path in the config
-   string, and macro_base.yml still states that a config enabling a lavyek suite
-   MUST add the triple.  Without it olly drops events and `wall_time` goes
-   negative, so this cannot be left to chance.
-
-   Detected by suite name: the `excludes:` maps on those modifiers are
-   exclusion-only, so there is no positive declaration to read, and every suite
-   that needs the triple is a lavyek one.  If a second parallel suite ever
-   appears, this is the function to teach about it. *)
+(* Suites with enabled programs that need `re_par-22|md_par-8|pin_lavyek` in
+   the config string (macro_base.yml requires it; without it olly drops events
+   and wall_time goes negative).  Detected by suite name, since the `excludes:`
+   maps are exclusion-only; a second parallel suite must be added here. *)
 let par_chain_suites t =
   List.filter
     (fun (s : suite) ->

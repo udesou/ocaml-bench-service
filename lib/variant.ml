@@ -1,9 +1,5 @@
-(* A runtime to measure: one side of the comparison.
-
-   Resolution (a ref like "trunk" -> a sha) happens upstream of the generator,
-   in the server, because it needs the network and a git remote.  By the time a
-   variant reaches here it is already pinned -- which is what makes two runs
-   labelled "trunk" comparable, and what makes this module pure. *)
+(* A runtime to measure: one side of the comparison.  Variants arrive already
+   pinned (resolution is the server's), which keeps this module pure. *)
 
 type spec = Version of string | Commit of string
 
@@ -14,36 +10,21 @@ type t = {
   spec : spec;
   role : role;
   repo : string option;
-      (* clone URL the sha is fetched from, when it is not the default
-         compiler repo -- a fork PR's head sha exists ONLY on the fork, so
-         building it from ocaml/ocaml would fail.  Not part of the runtime
-         NAME: a sha is globally unique, so identity is unaffected. *)
+      (* clone URL when the sha is not on the default compiler repo (a fork
+         PR's head exists only on the fork).  Not part of the runtime name. *)
   configure_args : string;
-      (* e.g. "--enable-frame-pointers --enable-flambda", whitespace-separated
-         (the runtime_pin's field).  Part of the requested build identity: it
-         goes into the runtime NAME (see runtime_name) and into the generated
-         config's `configure_args:` list, which running-ng passes to
-         `opam compiler create --configure-command`.  Produced by the
-         grammar's `+<flavor>` suffixes on vs= entries and by bench-gen's
-         --variant 4th field. *)
+      (* whitespace-separated configure args; part of the build identity
+         (runtime_name) and emitted into the config's `configure_args:` *)
   flavor : string option;
-      (* the human suffix for the runtime name when configure_args came from
-         named flavors, e.g. "fp-flambda".  Set by whoever resolved the
-         flavors (the policy owner: the resolver, from the service config's
-         flavor table); None means arbitrary args, which get the digest.
-         Whoever sets it owes the injectivity of (suffix <-> args), which the
-         flavor table's validation guarantees. *)
+      (* human suffix for the runtime name when configure_args came from named
+         flavors, e.g. "fp-flambda"; None means arbitrary args, which get the
+         digest.  Whoever sets it owes the injectivity of (suffix <-> args). *)
 }
 
-(* The default flavor table: name -> configure args.  A FLAVOR is a named,
-   allowlisted build variant; the grammar's `+fp` / `+flambda` suffixes on
-   `vs=` entries (`vs=5.5.0,5.5.0+fp,5.5.0+fp+flambda`).  The deployed table
-   lives in service.json (`flavors`, defaulting to this one) so adding a
-   variant is a config edit; the LIST ORDER is the canonical order, so a
-   flavor set maps 1:1 onto a configure_args string and a name suffix
-   regardless of how the user ordered the suffixes -- which keeps
-   runtime_name injective and matches the switch naming convention already
-   in use on the bench machines (running-ng-ocaml-5.5.0-fp-flambda). *)
+(* The default flavor table (name -> configure args); the deployed one is
+   service.json `flavors`.  List order is canonical, so a flavor set maps 1:1
+   onto a configure_args string and a name suffix however the user ordered the
+   suffixes (matching the existing running-ng-ocaml-5.5.0-fp-flambda naming). *)
 let default_flavors =
   [ ("fp", "--enable-frame-pointers"); ("flambda", "--enable-flambda") ]
 
@@ -75,18 +56,11 @@ let sha_short sha =
   let n = String.length sha in
   if n <= 7 then sha else String.sub sha 0 7
 
-(* The runtime name is the compiler cache key: running-ng provisions the switch
-   `running-ng-<runtime name>` and treats it as the cache -- and, per its own
-   comment, TRUSTS the config author to make names unique per distinct build.
-   The server is the config author, so the name must be an injective function
-   of the requested identity: (compiler sha-or-version, configure_args).  The
-   sha keeps same-commit requests sharing one switch; the args digest keeps
-   two configurations of one commit from thrashing each other's.
-
-   Environmental build inputs (running-ng's pinned dune, the opam repo state)
-   are deliberately NOT in the name: nobody can request them, they just drift
-   underneath it -- the agent's switch-provenance sidecar catches that and
-   rebuilds in place (§6.3). *)
+(* The runtime name is the compiler cache key: running-ng provisions
+   `running-ng-<name>` and trusts the config author to make names unique per
+   build, so the name must be injective in (compiler sha-or-version,
+   configure_args).  Environmental inputs (dune, opam repo state) are
+   deliberately absent; the agent's switch-provenance check catches their drift. *)
 let args_slug args = "c" ^ String.sub (Digest.to_hex (Digest.string args)) 0 6
 
 let runtime_name t =
@@ -128,9 +102,8 @@ let validate t =
   | _ -> Ok ()
 
 (* Emitted into the config's `runtimes:` block.  `version:` and `commit:` both
-   resolve to a git ref in running-ng (version "5.5.0" builds from the release
-   tag, not the ocaml-base-compiler package), so a released baseline and a PR
-   head are provisioned the same way. *)
+   resolve to a git ref in running-ng (version "5.5.0" builds the release tag,
+   not the ocaml-base-compiler package). *)
 let yaml_fields t =
   match t.spec with
   | Version v -> [ ("version", v) ]

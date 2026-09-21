@@ -1,21 +1,14 @@
 #!/usr/bin/env bash
-# Start (or stop) the whole service side under ONE screen session:
+# Start (or stop) the whole service side under one screen session "bench":
 #
 #   scripts/start_server.sh [start|stop|status]
 #
-# One session named "bench", three windows -- each script is a foreground
-# process that never returns, so they cannot share a shell:
+# Windows: serve (scripts/serve.sh), webview (scripts/webview.sh), bot
+# (bot/poll.sh), dashboards (scripts/dashboard_builder.sh), pages.  Attach with
+# `screen -r bench`.  Logs also land in the state dir (serve.log etc.), where
+# bump failures and internal-error incident ids (i-xxxxxx) live.
 #
-#   serve      scripts/serve.sh              the request server (capnp)
-#   webview    scripts/webview.sh            the runs index (static http)
-#   bot        bot/poll.sh                   the PR comment poller (gh auth)
-#   dashboards scripts/dashboard_builder.sh  per-run dashboard builds (node)
-#
-# Attach with `screen -r bench` (Ctrl-a d detaches, Ctrl-a " lists windows).
-# Logs also land in the state dir (serve.log / webview.log / bot.log), which
-# is where bump failures and internal-error incident ids (i-xxxxxx) live.
-#
-# Configuration comes from server.env exactly as serve.sh reads it, plus:
+# Configuration comes from server.env as serve.sh reads it, plus:
 #   BENCH_WEBVIEW_PORT   (default 8080)
 #   BENCH_BOT_REPO       (default udesou/ocaml; empty skips the bot)
 #   BENCH_BOT_INTERVAL   (default 20 seconds)
@@ -26,7 +19,6 @@ SESSION=bench
 
 command -v screen >/dev/null || { echo "screen is not installed"; exit 1; }
 
-# the same env file serve.sh loads, for BENCH_STATE_DIR etc.
 ENV_FILE="${BENCH_ENV_FILE:-$ROOT/server.env}"
 # shellcheck disable=SC1090
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
@@ -67,9 +59,8 @@ window() {
   screen -S "$SESSION" -X screen -t "$title" bash -c "cd $(printf %q "$ROOT") && $cmd"
 }
 
-# window 0 comes with the session; the rest are added to it.  -h raises
-# screen's per-window history from its default 100 lines -- the tee'd logs
-# in the state dir remain the authoritative record either way.
+# window 0 comes with the session.  -h raises screen's history from its default
+# 100 lines; the tee'd logs remain the authoritative record.
 screen -h 5000 -dmS "$SESSION" -t serve bash -c \
   "cd $(printf %q "$ROOT") && scripts/serve.sh 2>&1 | tee -a $(printf %q "$BENCH_STATE_DIR")/serve.log"
 window webview "scripts/webview.sh $BENCH_WEBVIEW_PORT 2>&1 | tee -a $(printf %q "$BENCH_STATE_DIR")/webview.log"

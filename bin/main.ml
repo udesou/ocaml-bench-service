@@ -1,16 +1,7 @@
-(* bench-gen -- the request-generation command line.
-
-     parse   a /bench comment                    -> JSON (no side effects)
-     spec    a /bench comment + pinned variants  -> run spec (+ optional --check)
-     help    render /bench help from live facts
-     vocab   the API A vocabulary (machines, families, tags, sweepable) as JSON
-     authz   test the trigger allowlist and roles
-
-   Ref resolution (trunk -> sha) is deliberately absent: it belongs to the
-   server, needs the network, and would make this untestable.  `spec` therefore
-   takes variants already pinned to a version or a sha -- which is also why the
-   run specs it writes carry `run_key: null`: the §8.1 key hashes resolved shas
-   and the machine's environment fingerprint, and only the server has both. *)
+(* bench-gen: the request-generation command line (parse, spec, help, vocab,
+   authz).  Ref resolution is deliberately absent (it belongs to the server):
+   `spec` takes variants already pinned, and the run specs it writes carry
+   `run_key: null` since only the server has resolved shas and machine facts. *)
 
 open Bench_service
 
@@ -196,9 +187,7 @@ let load_sweepable o =
   | Error e -> die "could not read %s: %s" o.vocab e
 
 (* Machine name and budgets come from the service config when there is one,
-   and from flags otherwise, so the CLI stays usable before a config exists.
-   Paths never come from the registry: it holds names and policy only (where
-   things live on a machine is the agent's configuration, §6.1); the
+   flags otherwise.  Paths never come from the registry; the
    --macro-bench-dir/--log-dir/--opamroot flags are dev-local conveniences. *)
 type placement = { p_machine : string; p_cap : float; p_cell : float }
 
@@ -260,8 +249,8 @@ let cmd_authz o =
       print_endline (Authz.message d);
       exit 1)
 
-(* The §5.2 vocabulary: what a requester may say.  The PR bot and the CLI read
-   this instead of hardcoding tags or machines. *)
+(* The vocabulary: what a requester may say.  The PR bot and the CLI read this
+   instead of hardcoding tags or machines. *)
 let cmd_vocab o =
   let svc = load_service o in
   let facts = load_facts o in
@@ -303,9 +292,9 @@ let cmd_spec o =
           "no --variant given: `spec` needs runtimes already resolved to a \
            version or a sha";
       let svc = load_service o in
-      (* The allowlist and the admin-only keys (force=, priority=) are checked
-         before any work happens when we know who asked; the CLI can omit
-         --login for local testing, which skips both. *)
+      (* The allowlist and admin-only keys are checked before any work when we
+         know who asked; --login may be omitted for local testing, which skips
+         both. *)
       (match (svc, o.login) with
       | Some c, Some login -> (
         let d = Authz.check c ~login ~association:o.association in
@@ -330,9 +319,8 @@ let cmd_spec o =
       let pl = resolve_placement o svc in
       let facts = load_facts o in
       let sweepable = load_sweepable o in
-      (* Check the tags before asking the bridge to filter on them: running-ng's
-         own message lists raw tag names and cannot suggest an alias, so ours is
-         the better one to show a user. *)
+      (* Check the tags before asking the bridge: running-ng's own message lists
+         raw tag names and cannot suggest an alias. *)
       List.iter
         (fun (requested, tag) ->
           match Gen.check_tag facts ~requested tag with
@@ -371,11 +359,10 @@ let cmd_spec o =
       | Error e -> print_endline e.Api.error_markdown; exit 1
       | Ok spec ->
         Util.write_file config_path spec.config_yaml;
-        (* The run spec is always written, whatever --format prints: it is the
-           artifact the runner consumes and the provenance record archived
-           beside the results.  See docs/RUNSPEC.md. *)
-        (* Sources carry shas, never refs (§6.1): pinned here from the local
-           checkouts, exactly as the server does. *)
+        (* The run spec is always written, whatever --format prints: it is what the
+           runner consumes and the provenance record.  See docs/RUNSPEC.md. *)
+        (* Sources carry shas, never refs: pinned from the local checkouts, as the
+           server does. *)
         let src name dir ref_ =
           match Resolver.local_source ~name ~dir ~ref_ () with
           | Ok s -> s
@@ -390,9 +377,8 @@ let cmd_spec o =
         let runspec_path =
           Filename.concat out_dir (o.request_id ^ ".runspec.json")
         in
-        (* run_key: null on purpose.  The §8.1 key hashes tool versions and
-           the machine's environment fingerprint, which only agent reports can
-           supply; a partial key would be a wrong one. *)
+        (* run_key: null on purpose: the key hashes tool versions and the
+           machine's environment fingerprint, which only agent reports supply. *)
         let runspec_json =
           Runspec.to_string ~ctx ~request ~spec ~variants:o.variants ~sources
             ~run_key:None

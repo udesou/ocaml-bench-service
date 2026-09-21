@@ -4,10 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OCaml bench — runs</title>
-<!-- The public runs index (§10, Q6): a single static page over runs.json,
-     which the request server rewrites on every state change.  Served by any
-     static file server pointed at <state>/webview/ (scripts/webview.sh).
-     Self-contained on purpose: no CDN, no build step, no framework. -->
+<!-- The public runs index: a single static page over runs.json, which the
+     request server rewrites on every state change.  Self-contained on purpose:
+     no CDN, no build step, no framework. -->
 <style>
   :root {
     --paper:   #F4F2ED;
@@ -236,8 +235,7 @@ function compilers(r) {
 }
 
 function results(r) {
-  // Every run has a page over its own bundle; terminal or not, that is
-  // where the details live.
+  // every run has a page, terminal or not
   const page = `run.html#${encodeURIComponent(r.run_id)}`;
   return `<a class="pr" href="${page}">${r.state === "done" ? "results" : "details"}</a>`;
 }

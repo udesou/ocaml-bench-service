@@ -1,10 +1,5 @@
-(* `/bench help`, generated -- never hardcoded.
-
-   The benchmark-set table comes from the base config and the sweepable
-   parameters from the contract's vocab.json, so the help text cannot drift from
-   what the service will actually accept.  That matters here more than usual:
-   the tags moved once already (the input-size ladder), and stale help is how a
-   user ends up filing a bug against a working service. *)
+(* `/bench help`, generated from the base config and vocab.json so it cannot
+   drift from what the service accepts. *)
 
 let render ~(facts : Facts.t) ~sweepable ~machines ~cap_seconds
     ~default_machine ~flavors

@@ -40,9 +40,19 @@ document is required reading.
   running-ng, where switches *are* the compiler cache.
 - **`service.json` is gitignored** and stays that way: it carries the real
   allowlist and bot account.
-- Keep `README.md`, this file, and `docs/RUNSPEC.md` consistent with every
-  change. Each pushed increment must stand on its own: no pointing at documents
-  that live outside the repository.
+- Keep this file consistent with every change. For `README.md` and
+  `docs/RUNSPEC.md`, follow the docs rule below. Each pushed increment must
+  stand on its own: no pointing at documents that live outside the repository.
+- **Human-facing docs are written by a human.** `README.md` and every other
+  `.md` file except this one are maintained by hand. When a change calls for a
+  docs update, do not edit the prose. Put an invisible HTML comment next to the
+  passage that needs to change, saying what changed and what the text should
+  now say: `<!-- TODO(docs): ... -->` (it does not render). When a PR is being
+  prepared, list every such comment so they can be resolved by hand before
+  merge: `grep -rn 'TODO(docs)' --include='*.md' .`
+- **Comments only where the code is not self-explanatory.** Never add a comment
+  that restates the code. Where one is needed, keep it short and explain the
+  intent or the non-obvious constraint at a high level, for a human reader.
 
 ## Where things live
 

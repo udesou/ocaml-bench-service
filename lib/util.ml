@@ -1,6 +1,5 @@
-(* Small helpers.  Deliberately dependency-free: the service builds in the
-   ocaml-bench-dashboard switch, and we don't add packages to a switch someone
-   else owns. *)
+(* Small helpers.  Dependency-free: the service builds in a switch we do not
+   own. *)
 
 let split_on ~sep s = String.split_on_char sep s
 
@@ -31,9 +30,8 @@ let starts_with ~prefix s =
   String.length s >= String.length prefix
   && String.sub s 0 (String.length prefix) = prefix
 
-(* Split "k=v" at the FIRST '=' only: sweep values can't contain '=', but
-   being lenient here keeps error messages about the value rather than the
-   shape. *)
+(* Split "k=v" at the first '=' only, so error messages stay about the value
+   rather than the shape. *)
 let split_kv s =
   match String.index_opt s '=' with
   | None -> None
@@ -62,16 +60,13 @@ let levenshtein a b =
     prev.(lb)
   end
 
-(* "Did you mean" only fires when it is likely to be right: a typo, not a
-   different word.  A wrong suggestion is worse than none in a PR comment --
-   short words are the trap ("wat" is within 2 edits of "tag" but means nothing
-   like it), so they get a tighter budget. *)
+(* "Did you mean" fires only when likely right: short words get a tighter edit
+   budget ("wat" is within 2 edits of "tag" but means nothing like it). *)
 let did_you_mean ~candidates word =
   let budget = if String.length word <= 4 then 1 else 2 in
   let scored =
     (* Never suggest the word back at the user: that happens when the name is
-       spelled correctly but is unavailable for some other reason, and
-       "Did you mean `small`?" after typing `small` reads as a bug. *)
+       spelled right but unavailable for another reason. *)
     List.filter (fun c -> c <> word) candidates
     |> List.map (fun c -> (levenshtein word c, c))
     |> List.sort compare
