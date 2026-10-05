@@ -75,9 +75,12 @@ document is required reading.
   (`--stub` keeps the protocol-only one): private clones under ~/.bench-agent
   checked out to the spec's shas, the config materialized after an md5 check
   with `${RUNNING_NG_ROOT}` substituted, then the pinned tree's own
-  run_ocaml_bench_gc_sweep.sh under setsid. Exit 0 is NOT success: an empty
-  contract (no configs in manifest.json) finishes as failed -- running-ng
-  skips failed benchmark builds and exits cleanly. Exits on a broken
+  run_ocaml_bench_gc_sweep.sh under setsid, with `--retry-failed-builds` when
+  the pinned running-ng has it (a build that failed in an earlier run is retried,
+  not refused). Such a running-ng exits 1 before any run if a benchmark fails to
+  build; an older one skips failed builds and exits cleanly, so exit 0 is NOT
+  success: an empty contract (no configs in manifest.json) finishes as failed.
+  Exits on a broken
   connection; a supervisor loop restarts it. `scripts/agent-setup.sh` is the
   bench-machine bootstrap (prereq checks, donor-seeded clones, build).
 - **macro-benches cannot build from a bare clone**: its vendored trees

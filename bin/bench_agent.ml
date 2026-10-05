@@ -760,6 +760,19 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
             let resume_args =
               match resume_dir with Some d -> [ "--resume"; d ] | None -> []
             in
+            (* a build that failed in an earlier run is retried, with a warning;
+               only passed to a running-ng that knows the flag *)
+            let retry_args =
+              let runbms =
+                List.fold_left Filename.concat running_ng
+                  [ "src"; "running"; "command"; "runbms.py" ]
+              in
+              let flag = "--retry-failed-builds" in
+              if Sys.file_exists runbms
+                 && Util.contains ~needle:flag (Util.read_file runbms)
+              then [ flag ]
+              else []
+            in
             let on_tick =
               progress_tracker p ~log_root ~before ~resume_dir ~console_path
                 ~cells_total:planned
@@ -778,7 +791,7 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
               | `Continue ->
                 run_supervised ~on_tick ~clock p ~ph:Api.Measuring
                   ~timeout_seconds:a.Api.timeout_seconds ~console_path
-                  ~overrides (script :: resume_args)
+                  ~overrides ((script :: retry_args) @ resume_args)
             in
             (* --- collect: on failure as well as success ------------------- *)
             let after =
