@@ -711,6 +711,9 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
                 ("OLLY_DIR", dir_of "olly");
                 ("OPAMROOT", opam_root);
                 ("RUNNING_REUSE_SWITCHES", "1");
+                (* running-ng with per-compiler opam roots keeps them all here
+                   and ignores the two above, which older pins still read *)
+                ("RUNNING_OPAM_ROOTS", Filename.concat state "opam-roots");
               ]
               @ (if tags = [] then [] else
                  [ ("RUNNING_TAG", String.concat "," tags) ])
