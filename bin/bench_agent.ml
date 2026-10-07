@@ -616,7 +616,19 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
           (jlist (member "sources" spec))
       in
       let dir_of name = Filename.concat gits name in
-      let checkout_all () =
+      (* a running-ng that builds olly itself (per runtime) takes its sha as
+         OLLY_COMMIT; older pins build the checkout passed as OLLY_DIR *)
+      let olly_commit_supported () =
+        Sys.file_exists
+          (List.fold_left Filename.concat (dir_of "running-ng")
+             [ "src"; "running"; "olly"; "__init__.py" ])
+      in
+      let olly_pin =
+        List.find_map
+          (fun (n, _, c) -> if n = "olly" then Some c else None)
+          sources
+      in
+      let checkout_all sources =
         List.fold_left
           (fun acc (name, repo, commit) ->
             match acc with
@@ -648,7 +660,16 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
                 Ok ()))
           (Ok ()) sources
       in
-      match checkout_all () with
+      let others, olly =
+        List.partition (fun (n, _, _) -> n <> "olly") sources
+      in
+      let checked_out =
+        match checkout_all others with
+        | Ok () when olly_commit_supported () -> Ok ()
+        | Ok () -> checkout_all olly
+        | Error _ as e -> e
+      in
+      match checked_out with
       | Error m -> fail_run p "prepare: %s" m
       | Ok () -> (
         mkdir_p workdir;
@@ -708,7 +729,6 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
                 ("CONFIG_FILE", config_path);
                 ("RUNNING_MACRO_BENCH_DIR", benches_dir);
                 ("RUNNING_BENCH_DIR", benches_dir);
-                ("OLLY_DIR", dir_of "olly");
                 ("OPAMROOT", opam_root);
                 ("RUNNING_REUSE_SWITCHES", "1");
                 (* running-ng with per-compiler opam roots keeps them all here
@@ -717,6 +737,10 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
               ]
               @ (if tags = [] then [] else
                  [ ("RUNNING_TAG", String.concat "," tags) ])
+              @
+              match olly_pin with
+              | Some c when olly_commit_supported () -> [ ("OLLY_COMMIT", c) ]
+              | _ -> [ ("OLLY_DIR", dir_of "olly") ]
             in
             let console_path = Filename.concat workdir "console.log" in
             let before =
