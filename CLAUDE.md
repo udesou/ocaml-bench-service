@@ -83,10 +83,13 @@ document is required reading.
   It also sets `RUNNING_OPAM_ROOTS=<state>/opam-roots`: a running-ng with
   per-compiler opam roots builds each compiler into its own root there (keyed by
   its git SHA, build settings and pinned opam-repository commit) and its own
-  tools/olly switches into `opam-roots/running-ng`, ignoring `OPAMROOT` and
+  tools switch into `opam-roots/running-ng`, ignoring `OPAMROOT` and
   `RUNNING_REUSE_SWITCHES`, which older pins still read. Roots accumulate (~1 GB
   each); clean up by hand on the agent with `RUNNING_OPAM_ROOTS=<state>/opam-roots
   python3 -m running.opam_roots gc --unused-for DAYS`.
+  olly: a running-ng that builds olly per runtime (it has `src/running/olly/`)
+  gets the olly pin as `OLLY_COMMIT` and fetches it itself, so the agent does not
+  check olly out; an older pin gets the agent's checkout as `OLLY_DIR`.
   Exits on a broken
   connection; a supervisor loop restarts it. `scripts/agent-setup.sh` is the
   bench-machine bootstrap (prereq checks, donor-seeded clones, build).
