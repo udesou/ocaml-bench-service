@@ -80,6 +80,13 @@ document is required reading.
   not refused). Such a running-ng exits 1 before any run if a benchmark fails to
   build; an older one skips failed builds and exits cleanly, so exit 0 is NOT
   success: an empty contract (no configs in manifest.json) finishes as failed.
+  It also sets `RUNNING_OPAM_ROOTS=<state>/opam-roots`: a running-ng with
+  per-compiler opam roots builds each compiler into its own root there (keyed by
+  its git SHA, build settings and pinned opam-repository commit) and its own
+  tools/olly switches into `opam-roots/running-ng`, ignoring `OPAMROOT` and
+  `RUNNING_REUSE_SWITCHES`, which older pins still read. Roots accumulate (~1 GB
+  each); clean up by hand on the agent with `RUNNING_OPAM_ROOTS=<state>/opam-roots
+  python3 -m running.opam_roots gc --unused-for DAYS`.
   Exits on a broken
   connection; a supervisor loop restarts it. `scripts/agent-setup.sh` is the
   bench-machine bootstrap (prereq checks, donor-seeded clones, build).
