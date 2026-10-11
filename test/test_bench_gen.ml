@@ -1674,6 +1674,9 @@ let test_execution () =
         {|{"benchmark":{"name":"irmin_mem_rw"},"config":{"config_id":"a"},"invocation":0,"metrics":[{"name":"wall_time","value":10.0}]}
 {"benchmark":{"name":"irmin_mem_rw"},"config":{"config_id":"b"},"invocation":0,"metrics":[{"name":"wall_time","value":10.6}]}|}
       );
+      ( "build-failures.json",
+        {|{"build_failures":[{"suite":"macro-jsoo","benchmark":"jsoo_default","runtime":"ocaml-c0f8c8c","reason":"exit 1"}]}|}
+      );
     ];
   (match
      Server.finish deps ~machine:"monolith" id2
@@ -1703,7 +1706,9 @@ let test_execution () =
       check_contains ~name:"the report rides in the completion verbatim"
         ~needle:"Candidate `ocaml-c0f8c8c` vs baseline `ocaml-5.5.0`" md;
       check_contains ~name:"one invocation: the embedded wall delta is gated"
-        ~needle:"(n=1)*" md
+        ~needle:"(n=1)*" md;
+      check_contains ~name:"the completion notice lists what did not build"
+        ~needle:"did not build (1, so not measured there): `jsoo_default` on `ocaml-c0f8c8c`" md
     | None -> fail "no completion.md after the done finish");
     check_true ~name:"finish writes report.md into the bundle"
       (Sys.file_exists
