@@ -794,11 +794,13 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
                 List.fold_left Filename.concat running_ng
                   [ "src"; "running"; "command"; "runbms.py" ]
               in
+              let src = try Util.read_file runbms with _ -> "" in
               let flag = "--retry-failed-builds" in
-              if Sys.file_exists runbms
-                 && Util.contains ~needle:flag (Util.read_file runbms)
-              then [ flag ]
-              else []
+              (if Util.contains ~needle:flag src then [ flag ] else [])
+              (* measure what built, when running-ng also reports what did not *)
+              @ if Util.contains ~needle:"build-failures.json" src then
+                  [ "--skip-build-failures" ]
+                else []
             in
             let on_tick =
               progress_tracker p ~log_root ~before ~resume_dir ~console_path
@@ -873,6 +875,7 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
                           if
                             starts_with ~prefix:"contract/" rel
                             || rel = "runbms.yml" || rel = "runbms_args.yml"
+                            || rel = "build-failures.json"
                           then rel
                           else "raw/" ^ rel
                         in
