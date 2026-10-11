@@ -909,14 +909,30 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
                     | exception _ -> false)
                   fresh
               in
+              (* one cell per benchmark that did not build: the service runs
+                 one config per runtime *)
+              let unbuilt =
+                List.fold_left
+                  (fun n d ->
+                    match
+                      Yojson.Safe.from_string
+                        (Util.read_file
+                           (Filename.concat
+                              (Filename.concat log_root d)
+                              "build-failures.json"))
+                    with
+                    | j -> n + List.length (jlist (member "build_failures" j))
+                    | exception _ -> n)
+                  0 fresh
+              in
               if measured then
                 p.finish
                   {
                     Api.outcome = `Done;
                     (* planned counts until the progress plugin reports real per-cell
                        passes *)
-                    cells_passed = planned;
-                    cells_failed = 0;
+                    cells_passed = max 0 (planned - unbuilt);
+                    cells_failed = unbuilt;
                     detail = None;
                   }
               else
