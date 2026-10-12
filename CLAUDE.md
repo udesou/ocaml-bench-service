@@ -77,8 +77,10 @@ document is required reading.
   with `${RUNNING_NG_ROOT}` substituted, then the pinned tree's own
   run_ocaml_bench_gc_sweep.sh under setsid, with `--retry-failed-builds` when
   the pinned running-ng has it (a build that failed in an earlier run is retried,
-  not refused). Such a running-ng exits 1 before any run if a benchmark fails to
-  build; an older one skips failed builds and exits cleanly, so exit 0 is NOT
+  not refused). A running-ng that writes `build-failures.json` also gets
+  `--skip-build-failures`: it measures what built, and the server lists what did
+  not in completion.md (the file is uploaded with the bundle). One without it
+  exits 1 before any run if a benchmark fails to build. Either way exit 0 is NOT
   success: an empty contract (no configs in manifest.json) finishes as failed.
   It also sets `RUNNING_OPAM_ROOTS=<state>/opam-roots`: a running-ng with
   per-compiler opam roots builds each compiler into its own root there (keyed by
