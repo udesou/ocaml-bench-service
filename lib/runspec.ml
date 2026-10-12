@@ -132,6 +132,7 @@ let to_json ~(ctx : Gen.context) ~(request : Request.t) ~(spec : Gen.t)
                      "perf_*.json";
                      "runbms.yml";
                      "runbms_args.yml";
+                     "build-failures.json";
                    ]) );
             (* Raw traces stay on the machine: they are large, and the store
                holds the small canonical artifacts, not bulk data. *)

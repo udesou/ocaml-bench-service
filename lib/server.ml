@@ -394,6 +394,20 @@ let render_report deps (m : Api.meta) =
           ()
       with _ -> None))
 
+(* (benchmark, runtime) pairs running-ng could not build, from the bundle. *)
+let build_failures deps run_id =
+  let open Yojson.Safe.Util in
+  match
+    Util.read_file (Filename.concat (run_dir deps run_id) "build-failures.json")
+  with
+  | exception _ -> []
+  | s -> (
+    try
+      Yojson.Safe.from_string s |> member "build_failures" |> to_list
+      |> List.map (fun j ->
+             (to_string (member "benchmark" j), to_string (member "runtime" j)))
+    with _ -> [])
+
 let write_completion deps (m : Api.meta) ~detail ~report =
   let l = links deps m.Api.run_id in
   let b = Buffer.create 256 in
@@ -414,6 +428,15 @@ let write_completion deps (m : Api.meta) ~detail ~report =
       (if m.Api.cells_failed > 0 then
          Printf.sprintf ", %d failed" m.Api.cells_failed
        else "");
+  (match build_failures deps m.Api.run_id with
+  | [] -> ()
+  | fs ->
+    let shown = List.filteri (fun i _ -> i < 20) fs in
+    add "- did not build (%d, so not measured there): %s%s\n" (List.length fs)
+      (String.concat ", "
+         (List.map (fun (b, r) -> Printf.sprintf "`%s` on `%s`" b r) shown))
+      (if List.length fs > List.length shown then ", ... (see the console log)"
+       else ""));
   (match detail with
   | Some d when m.Api.state <> Api.Done -> add "\n> %s\n" (Util.trim d)
   | _ -> ());
