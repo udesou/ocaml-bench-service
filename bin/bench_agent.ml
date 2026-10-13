@@ -691,7 +691,7 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
         let benches_dir =
           if Sys.file_exists (dir_of "macro-benches") then
             dir_of "macro-benches"
-          else dir_of "benches"
+          else dir_of "micro-benches"
         in
         let script = Filename.concat running_ng launch_script in
         if not (Sys.file_exists script) then

@@ -194,7 +194,7 @@ type machine_type = string
 
 (* The bumpable components.  The service and the agent are absent on purpose:
    they change by deploying, not bumping. *)
-type component = Running_ng | Macro_benches | Benches | Olly | Dashboard
+type component = Running_ng | Macro_benches | Micro_benches | Olly | Dashboard
 
 type pin = {
   pinned_component : component;
@@ -215,14 +215,14 @@ type versions = {
 let string_of_component = function
   | Running_ng -> "running-ng"
   | Macro_benches -> "macro-benches"
-  | Benches -> "benches"
+  | Micro_benches -> "micro-benches"
   | Olly -> "olly"
   | Dashboard -> "dashboard"
 
 let component_of_string = function
   | "running-ng" -> Some Running_ng
   | "macro-benches" -> Some Macro_benches
-  | "benches" -> Some Benches
+  | "micro-benches" -> Some Micro_benches
   | "olly" -> Some Olly
   | "dashboard" -> Some Dashboard
   | _ -> None
