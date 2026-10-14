@@ -59,7 +59,7 @@ seed() {
   fi
 }
 seed running-ng "${RUNNING_NG_DONOR:-$HOME/running-ng}" \
-  https://github.com/udesou/running-ng
+  https://github.com/ocaml-bench/running-ng
 seed macro-benches "${MACRO_BENCHES_DONOR:-$HOME/macro-benches}" \
   https://github.com/ocaml-bench/macro-benches
 seed olly "${OLLY_DONOR:-$HOME/runtime_events_tools}" \
