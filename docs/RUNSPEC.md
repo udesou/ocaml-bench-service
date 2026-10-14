@@ -51,9 +51,8 @@ fingerprint) -- a partial key would be a wrong one.
 the run draws from, so micro becomes a data change rather than a schema change.
 
 ### `sources` -- list of `{name, repo, commit}`
-<!-- TODO(docs): the benches repo is now micro-benches; the component name is "micro-benches" -->
 One entry per repo the run needs: `running-ng`, `macro-benches` (or
-`benches`, when micro lands), and `olly` (runtime_events_tools). `repo` is
+`micro-benches`, when micro lands), and `olly` (runtime_events_tools). `repo` is
 the clone URL; `commit` is the sha the server resolved -- a snapshot of the
 server's pins (`pins.json`, changed only by the admin `bump` op) at
 submission time. The macro-benches commit is part of the
