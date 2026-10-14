@@ -8,7 +8,7 @@ which runtimes to compare, how many invocations or parameters to sweep. The resu
 can then be tracked in a webview/dashboard and are reported back to the user in the same PR.
 
 This service adds a request-and-scheduling layer around three existing pieces: the
-[running-ng](https://github.com/udesou/running-ng) benchmark orchestrator, the
+[running-ng](https://github.com/ocaml-bench/running-ng) benchmark orchestrator, the
 [macro-benches](https://github.com/ocaml-bench/macro-benches) suites, and the
 [ocaml-bench-dashboard](https://github.com/udesou/ocaml-bench-dashboard), which contains
 the data contract (e.g, what metrics are output) and a dashboard to visualize the results.
