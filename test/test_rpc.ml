@@ -76,7 +76,7 @@ let deps ?(resolver = Resolver.offline) () =
     sources =
       [
         Runspec.source ~name:"running-ng"
-          ~repo:"https://github.com/udesou/running-ng"
+          ~repo:"https://github.com/ocaml-bench/running-ng"
           ~commit:"1111111111111111111111111111111111111111" ();
         Runspec.source ~name:"macro-benches"
           ~repo:"https://github.com/ocaml-bench/macro-benches"

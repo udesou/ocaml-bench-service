@@ -84,7 +84,7 @@ clone_bare() {
 # full clones: the daemon extracts running-ng's tree from its pin, and the
 # dashboard checkout is where per-run dashboards are built
 clone "${RUNNING_NG_REPO:-$GITDIR/running-ng}" \
-      https://github.com/udesou/running-ng "$HOME/running-ng"
+      https://github.com/ocaml-bench/running-ng "$HOME/running-ng"
 clone "${DASHBOARD_REPO:-$GITDIR/ocaml-bench-dashboard}" \
       https://github.com/udesou/ocaml-bench-dashboard "$HOME/ocaml-bench-dashboard"
 # metadata-only on a server host: pinned into specs, never built here
