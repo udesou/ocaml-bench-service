@@ -628,7 +628,7 @@ let test_runspec () =
     let sources =
       [
         Runspec.source ~name:"running-ng"
-          ~repo:"https://github.com/udesou/running-ng" ~commit:rng_sha ();
+          ~repo:"https://github.com/ocaml-bench/running-ng" ~commit:rng_sha ();
         Runspec.source ~name:"macro-benches"
           ~repo:"https://github.com/ocaml-bench/macro-benches" ~commit:mb_sha
           ();
@@ -680,7 +680,7 @@ let test_runspec () =
       check_eq_opt ~name:"first source is running-ng"
         ~expected:(Some "running-ng") ~actual:(jstr (member "name" a));
       check_eq_opt ~name:"sources carry the clone URL"
-        ~expected:(Some "https://github.com/udesou/running-ng")
+        ~expected:(Some "https://github.com/ocaml-bench/running-ng")
         ~actual:(jstr (member "repo" a));
       check_eq_opt ~name:"running-ng is pinned to a sha" ~expected:(Some rng_sha)
         ~actual:(jstr (member "commit" a));
@@ -1105,7 +1105,7 @@ let test_server () =
       sources =
         [
           Runspec.source ~name:"running-ng"
-            ~repo:"https://github.com/udesou/running-ng"
+            ~repo:"https://github.com/ocaml-bench/running-ng"
             ~commit:"1111111111111111111111111111111111111111" ();
           Runspec.source ~name:"macro-benches"
             ~repo:"https://github.com/ocaml-bench/macro-benches"
