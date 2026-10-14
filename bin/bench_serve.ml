@@ -265,7 +265,7 @@ let deps o ~on_bump =
         (fun (p : Api.pin) ->
           match p.Api.pinned_component with
           | Api.Dashboard -> None (* presentation, not a run input *)
-          | (Api.Running_ng | Api.Macro_benches | Api.Benches | Api.Olly) as c
+          | (Api.Running_ng | Api.Macro_benches | Api.Micro_benches | Api.Olly) as c
             ->
             let dir =
               match List.find_opt (fun (c', _, _) -> c' = c) pin_config with
