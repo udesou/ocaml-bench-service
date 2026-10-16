@@ -53,6 +53,7 @@ Every run can be tracked in a **live page** and **dashboard** containing graphs 
 /bench cancel <run-id>      # the id is in the run's acknowledgement
 /bench continue <run-id>    # finish a terminal run's missing cells: keeps
                             #   completed results, retries failed builds
+<!-- TODO(docs): `continue` also reruns cells whose benchmark failed at run time (with a running-ng that writes run-failures.json: such a cell is no longer marked complete). The completion notice now counts a cell as passed only when it was measured and no invocation failed, and lists the failed ones ("failed at run time"). -->
 /bench rerun                # clean slate: rebuild everything
 /bench help                 # help about the commands.
 ```

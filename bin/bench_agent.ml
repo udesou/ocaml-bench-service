@@ -488,6 +488,40 @@ let has_sub ~needle hay =
   in
   nl > 0 && go 0
 
+(* Built benchmarks are cached in the checkout as <program>-<runtime>, and the
+   runtime name carries only the compiler, so a binary built from an older
+   commit of the benchmarks would be reused.  Drop them, with the .build-failed
+   sentinels, whenever the commit moves.  Tracked in <state>/<name>-binaries. *)
+let drop_stale_binaries ~state ~name ~dir ~commit =
+  let marker = Filename.concat state (name ^ "-binaries") in
+  let recorded = try String.trim (Util.read_file marker) with _ -> "" in
+  if recorded <> commit then begin
+    (* macro-benches' vendored trees hold no binaries *)
+    let scope = if name = "macro-benches" then "benchmarks" else "." in
+    (match
+       git
+         [ "-C"; dir; "ls-files"; "-z"; "--others"; "--ignored";
+           "--exclude-standard"; "--"; scope; ":(exclude)_build*" ]
+     with
+    | Ok out ->
+      let stale =
+        List.filter
+          (fun path ->
+            let b = Filename.basename path in
+            has_sub ~needle:"-ocaml-" b || Filename.check_suffix b ".build-failed")
+          (String.split_on_char '\000' out)
+      in
+      if stale <> [] then
+        log "%s is now at %s: dropping %d built benchmark binaries" name
+          commit (List.length stale);
+      List.iter
+        (fun path ->
+          try Sys.remove (Filename.concat dir path) with Sys_error _ -> ())
+        stale
+    | Error m -> log "%s: could not list built binaries: %s" name m);
+    Util.write_file marker (commit ^ "\n")
+  end
+
 (* PROVISIONAL per-benchmark progress until the running-ng progress plugin
    lands: watch the run directory for per-cell logs and sidecars on each tick.
    Failures are grepped from new console output, capped so a pathological run
@@ -673,6 +707,11 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
       | Error m -> fail_run p "prepare: %s" m
       | Ok () -> (
         mkdir_p workdir;
+        List.iter
+          (fun (n, _, commit) ->
+            if n = "macro-benches" || n = "micro-benches" then
+              drop_stale_binaries ~state ~name:n ~dir:(dir_of n) ~commit)
+          sources;
         (* the monorepo's vendored trees: first run, and every benches bump *)
         let setup =
           match
@@ -876,6 +915,7 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
                             starts_with ~prefix:"contract/" rel
                             || rel = "runbms.yml" || rel = "runbms_args.yml"
                             || rel = "build-failures.json"
+                            || rel = "run-failures.json"
                           then rel
                           else "raw/" ^ rel
                         in
@@ -909,30 +949,44 @@ let execute_real cap ~clock ~(opts : opts) (a : Api.assignment) =
                     | exception _ -> false)
                   fresh
               in
-              (* one cell per benchmark that did not build: the service runs
-                 one config per runtime *)
-              let unbuilt =
-                List.fold_left
-                  (fun n d ->
-                    match
-                      Yojson.Safe.from_string
-                        (Util.read_file
-                           (Filename.concat
-                              (Filename.concat log_root d)
-                              "build-failures.json"))
-                    with
-                    | j -> n + List.length (jlist (member "build_failures" j))
-                    | exception _ -> n)
-                  0 fresh
+              let read_in d rel =
+                try Util.read_file (Filename.concat (Filename.concat log_root d) rel)
+                with _ -> ""
+              in
+              let measured_cells =
+                List.concat_map
+                  (fun d ->
+                    let dir = Filename.concat log_root d in
+                    let mdir = Filename.concat dir "contract/measurements" in
+                    let ndjson =
+                      try
+                        Array.to_list (Sys.readdir mdir)
+                        |> List.filter (fun f -> Filename.check_suffix f ".ndjson")
+                        |> List.map (fun f -> Util.read_file (Filename.concat mdir f))
+                      with Sys_error _ -> []
+                    in
+                    Cells.measured
+                      ~manifest:(read_in d "contract/manifest.json")
+                      ~measurements:ndjson)
+                  fresh
+              in
+              let failed_cells =
+                List.concat_map
+                  (fun d ->
+                    Cells.build_failures (read_in d "build-failures.json")
+                    @ Cells.run_failures (read_in d "run-failures.json"))
+                  fresh
+                |> List.map (fun (f : Cells.failure) -> f.cell)
+              in
+              let cells_passed, cells_failed =
+                Cells.count ~planned ~measured:measured_cells ~failed:failed_cells
               in
               if measured then
                 p.finish
                   {
                     Api.outcome = `Done;
-                    (* planned counts until the progress plugin reports real per-cell
-                       passes *)
-                    cells_passed = max 0 (planned - unbuilt);
-                    cells_failed = unbuilt;
+                    cells_passed;
+                    cells_failed;
                     detail = None;
                   }
               else
