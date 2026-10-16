@@ -82,6 +82,12 @@ document is required reading.
   not in completion.md (the file is uploaded with the bundle). One without it
   exits 1 before any run if a benchmark fails to build. Either way exit 0 is NOT
   success: an empty contract (no configs in manifest.json) finishes as failed.
+  Cells are counted by `lib/cells.ml`: a (benchmark, runtime) cell passed when
+  the contract holds a measurement of it and it is in neither
+  `build-failures.json` nor `run-failures.json` (running-ng's failed
+  invocations, uploaded too and listed in completion.md); every other planned
+  cell failed. So a benchmark that crashed at run time is never "passed", even
+  on an older running-ng that writes no run-failures.json (it just has no row).
   It also sets `RUNNING_OPAM_ROOTS=<state>/opam-roots`: a running-ng with
   per-compiler opam roots builds each compiler into its own root there (keyed by
   its git SHA, build settings and pinned opam-repository commit) and its own
@@ -303,7 +309,13 @@ document is required reading.
   `<benchmark>-<runtime>` and the runtime name encodes only the *compiler* sha, so
   changing benchmark source does not invalidate a cached binary. `sources` in the
   run spec carries both repos pinned to shas -- resolved by the SERVER before
-  dispatch, never left as refs for the agent.
+  dispatch, never left as refs for the agent. The agent drops a benches repo's
+  built binaries and `.build-failed` sentinels whenever its commit moves
+  (`drop_stale_binaries`, marker `<agent-state>/<repo>-binaries`): many outputs
+  are wrappers that exec into per-runtime products (`_build-<rt>/`,
+  `vendor/.apron_prefix-<rt>`), so a binary from an older commit can point at a
+  tree that is gone. macro-benches' own setup restarts its vendored trees when
+  setup's inputs change (`.setup-stamp`).
 - **The measurement modifier chain is derived, not hardcoded** (`Gen.modifier_chain`).
   running-ng #15 (`fb9751c`, on `adding-ocaml-support`) moved the sequential
   `re`/`md` onto the benchmarks as a suite/program `ocamlrunparam:` field -- five

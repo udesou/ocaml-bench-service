@@ -394,19 +394,19 @@ let render_report deps (m : Api.meta) =
           ()
       with _ -> None))
 
+let bundle_file deps run_id rel =
+  try Util.read_file (Filename.concat (run_dir deps run_id) rel) with _ -> ""
+
 (* (benchmark, runtime) pairs running-ng could not build, from the bundle. *)
 let build_failures deps run_id =
-  let open Yojson.Safe.Util in
-  match
-    Util.read_file (Filename.concat (run_dir deps run_id) "build-failures.json")
-  with
-  | exception _ -> []
-  | s -> (
-    try
-      Yojson.Safe.from_string s |> member "build_failures" |> to_list
-      |> List.map (fun j ->
-             (to_string (member "benchmark" j), to_string (member "runtime" j)))
-    with _ -> [])
+  List.map
+    (fun (f : Cells.failure) -> f.cell)
+    (Cells.build_failures (bundle_file deps run_id "build-failures.json"))
+
+(* Cells with a failed invocation: (cell, first reason, invocations failed). *)
+let run_failures deps run_id =
+  Cells.summarise
+    (Cells.run_failures (bundle_file deps run_id "run-failures.json"))
 
 let write_completion deps (m : Api.meta) ~detail ~report =
   let l = links deps m.Api.run_id in
@@ -435,6 +435,19 @@ let write_completion deps (m : Api.meta) ~detail ~report =
     add "- did not build (%d, so not measured there): %s%s\n" (List.length fs)
       (String.concat ", "
          (List.map (fun (b, r) -> Printf.sprintf "`%s` on `%s`" b r) shown))
+      (if List.length fs > List.length shown then ", ... (see the console log)"
+       else ""));
+  (match run_failures deps m.Api.run_id with
+  | [] -> ()
+  | fs ->
+    let shown = List.filteri (fun i _ -> i < 20) fs in
+    add "- failed at run time (%d, see their logs): %s%s\n" (List.length fs)
+      (String.concat ", "
+         (List.map
+            (fun ((b, r), why, n) ->
+              Printf.sprintf "`%s` on `%s` (%s%s)" b r why
+                (if n > 1 then Printf.sprintf ", %d invocations" n else ""))
+            shown))
       (if List.length fs > List.length shown then ", ... (see the console log)"
        else ""));
   (match detail with
