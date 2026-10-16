@@ -56,11 +56,10 @@ One entry per repo the run needs: `running-ng`, `macro-benches` (or
 the clone URL; `commit` is the sha the server resolved -- a snapshot of the
 server's pins (`pins.json`, changed only by the admin `bump` op) at
 submission time. The macro-benches commit is part of the
-run's identity: benchmark binaries are cached as `<benchmark>-<runtime>` and
-the runtime name encodes only the *compiler* sha, so a benchmark-source change
-does not invalidate a cached binary -- without this pin, a run silently
-measures old benchmark code against a new compiler.
-<!-- TODO(docs): the agent now also drops the built binaries (and .build-failed sentinels) of macro-benches/micro-benches whenever that pin moves (marker <agent-state>/<repo>-binaries), so a new benches pin always rebuilds. The pin is still what makes a run's identity explicit. -->
+run's identity: benchmark binaries are cached as `<benchmark>-<runtime>`, and
+the runtime name encodes only the *compiler* sha, so the pin is what ties a run
+to its benchmark source. The agent drops its built binaries whenever that pin
+moves, so a new pin always rebuilds.
 
 ### `baseline`, `candidates`
 The compilers, already pinned -- a ref like `trunk` never reaches here.
