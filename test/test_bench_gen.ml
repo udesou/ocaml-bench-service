@@ -1677,6 +1677,10 @@ let test_execution () =
       ( "build-failures.json",
         {|{"build_failures":[{"suite":"macro-jsoo","benchmark":"jsoo_default","runtime":"ocaml-c0f8c8c","reason":"exit 1"}]}|}
       );
+      ( "run-failures.json",
+        {|{"run_failures":[{"benchmark":"goblint_gen_default","runtime":"ocaml-5.5.0","invocation":0,"kind":"error","returncode":1,"reason":"exit 1"},
+                           {"benchmark":"goblint_gen_default","runtime":"ocaml-5.5.0","invocation":1,"kind":"error","returncode":1,"reason":"exit 1"}]}|}
+      );
     ];
   (match
      Server.finish deps ~machine:"monolith" id2
@@ -1708,7 +1712,9 @@ let test_execution () =
       check_contains ~name:"one invocation: the embedded wall delta is gated"
         ~needle:"(n=1)*" md;
       check_contains ~name:"the completion notice lists what did not build"
-        ~needle:"did not build (1, so not measured there): `jsoo_default` on `ocaml-c0f8c8c`" md
+        ~needle:"did not build (1, so not measured there): `jsoo_default` on `ocaml-c0f8c8c`" md;
+      check_contains ~name:"the completion notice lists what failed at run time"
+        ~needle:"failed at run time (1, see their logs): `goblint_gen_default` on `ocaml-5.5.0` (exit 1, 2 invocations)" md
     | None -> fail "no completion.md after the done finish");
     check_true ~name:"finish writes report.md into the bundle"
       (Sys.file_exists
@@ -1973,7 +1979,41 @@ let test_help () =
   check_true ~name:"help does not advertise removed options"
     (not (contains ~needle:"tools=" h) && not (contains ~needle:"benches=" h))
 
+let test_cells () =
+  let manifest =
+    {|{"configs":[{"config_id":"a","_runtime_name":"rt-a"},
+                  {"config_id":"b","runtime":{"version":"rt-b"}}]}|}
+  in
+  let row b c =
+    Printf.sprintf {|{"benchmark":{"name":"%s"},"config":{"config_id":"%s"}}|} b c
+  in
+  let measured =
+    Cells.measured ~manifest
+      ~measurements:
+        [ String.concat "\n" [ row "x" "a"; row "x" "a"; row "x" "b" ];
+          row "y" "a" ^ "\n" ]
+  in
+  check_true ~name:"cells: measured maps config ids to runtimes, deduplicated"
+    (measured = [ ("x", "rt-a"); ("x", "rt-b"); ("y", "rt-a") ]);
+  check_true ~name:"cells: all planned cells measured and none failed"
+    (Cells.count ~planned:3 ~measured ~failed:[] = (3, 0));
+  check_true ~name:"cells: a failed invocation fails its cell"
+    (Cells.count ~planned:3 ~measured ~failed:[ ("x", "rt-b") ] = (2, 1));
+  check_true ~name:"cells: a cell with no measurement and no failure entry failed"
+    (Cells.count ~planned:4 ~measured ~failed:[] = (3, 1));
+  let rf =
+    Cells.run_failures
+      {|{"run_failures":[{"benchmark":"x","runtime":"rt-a","reason":"exit 2"},
+                         {"benchmark":"x","runtime":"rt-a","reason":"timed out"},
+                         {"benchmark":"y","runtime":"rt-a"}]}|}
+  in
+  check_true ~name:"cells: run failures summarise per cell with the first reason"
+    (Cells.summarise rf = [ (("x", "rt-a"), "exit 2", 2); (("y", "rt-a"), "", 1) ]);
+  check_true ~name:"cells: an unreadable failures file is no failures"
+    (Cells.run_failures "" = [] && Cells.build_failures "{" = [])
+
 let () =
+  test_cells ();
   test_parsing ();
   test_golden ();
   test_shape_rules ();

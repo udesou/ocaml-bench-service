@@ -60,6 +60,7 @@ run's identity: benchmark binaries are cached as `<benchmark>-<runtime>` and
 the runtime name encodes only the *compiler* sha, so a benchmark-source change
 does not invalidate a cached binary -- without this pin, a run silently
 measures old benchmark code against a new compiler.
+<!-- TODO(docs): the agent now also drops the built binaries (and .build-failed sentinels) of macro-benches/micro-benches whenever that pin moves (marker <agent-state>/<repo>-binaries), so a new benches pin always rebuilds. The pin is still what makes a run's identity explicit. -->
 
 ### `baseline`, `candidates`
 The compilers, already pinned -- a ref like `trunk` never reaches here.
